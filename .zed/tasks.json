@@ -12,6 +12,10 @@
     "command": "go test -shuffle on -run TestEval ./..."
   },
   {
+    "label": "Lint",
+    "command": "golangci-lint run"
+  },
+  {
     "label": "Test $ZED_SYMBOL",
     "command": "go test -run $ZED_SYMBOL $ZED_CUSTOM_GO_PACKAGE",
     "tags": ["go-test"]
