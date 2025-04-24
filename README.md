@@ -1,7 +1,13 @@
-# template
+# gloo
 
-[![Docs](https://pkg.go.dev/badge/maragu.dev/template)](https://pkg.go.dev/maragu.dev/template)
-[![CI](https://github.com/maragudk/template/actions/workflows/ci.yml/badge.svg)](https://github.com/maragudk/template/actions/workflows/ci.yml)
+[![Docs](https://pkg.go.dev/badge/maragu.dev/gloo)](https://pkg.go.dev/maragu.dev/gloo)
+[![CI](https://github.com/maragudk/gloo/actions/workflows/ci.yml/badge.svg)](https://github.com/maragudk/gloo/actions/workflows/ci.yml)
+
+A collection of models, functions, and methods I often use in libraries and services. Mainly for internal use, feel free to use or be inspired.
+
+```shell
+go get maragu.dev/gloo
+```
 
 Made with ✨sparkles✨ by [maragu](https://www.maragu.dev/).
 
