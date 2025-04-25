@@ -9,7 +9,7 @@ import (
 	"maragu.dev/gloo/model"
 )
 
-const contextUserIDKey = contextKey("userID")
+const contextUserIDKey = ContextKey("userID")
 
 const sessionUserIDKey = "userID"
 
