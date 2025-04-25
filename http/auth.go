@@ -35,21 +35,21 @@ type userActiveChecker interface {
 // After authentication, the user ID is stored in the request context, and can be retrieved using [GetUserIDFromContext].
 // If there is no session, the middleware does nothing and just calls the next handler.
 // If there is no user (anymore) that's in the session, or the user is inactive, the middleware destroys the session.
-func Authenticate(log *slog.Logger, sg sessionGetterDestroyer, db userActiveChecker) Middleware {
+func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveChecker) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// If there is no session, do nothing and call the next handler
-			if !sg.Exists(r.Context(), sessionUserIDKey) {
+			if !sgd.Exists(r.Context(), sessionUserIDKey) {
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			// Get the user from the database, and destroy the session if the user is not found
-			userID := model.ID(sg.GetString(r.Context(), sessionUserIDKey))
-			active, err := db.IsUserActive(r.Context(), userID)
+			userID := model.ID(sgd.GetString(r.Context(), sessionUserIDKey))
+			active, err := uac.IsUserActive(r.Context(), userID)
 			if err != nil {
 				if errors.Is(err, model.ErrorUserNotFound) {
-					if err := sg.Destroy(r.Context()); err != nil {
+					if err := sgd.Destroy(r.Context()); err != nil {
 						log.Info("Error destroying session for nonexistent user", "error", err, "userID", userID)
 						http.Error(w, "error destroying session after authentication", http.StatusInternalServerError)
 						return
@@ -67,7 +67,7 @@ func Authenticate(log *slog.Logger, sg sessionGetterDestroyer, db userActiveChec
 
 			// Destroy the session if the user is not active, but continue processing the request
 			if !active {
-				if err := sg.Destroy(r.Context()); err != nil {
+				if err := sgd.Destroy(r.Context()); err != nil {
 					log.Info("Error destroying session for inactive user", "error", err, "userID", userID)
 					http.Error(w, "error destroying session after authentication", http.StatusInternalServerError)
 					return
