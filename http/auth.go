@@ -11,7 +11,7 @@ import (
 
 const contextUserIDKey = ContextKey("userID")
 
-const sessionUserIDKey = "userID"
+const SessionUserIDKey = "userID"
 
 type sessionDestroyer interface {
 	Destroy(ctx context.Context) error
@@ -39,13 +39,13 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// If there is no session, do nothing and call the next handler
-			if !sgd.Exists(r.Context(), sessionUserIDKey) {
+			if !sgd.Exists(r.Context(), SessionUserIDKey) {
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			// Get the user from the database, and destroy the session if the user is not found
-			userID := model.ID(sgd.GetString(r.Context(), sessionUserIDKey))
+			userID := model.ID(sgd.GetString(r.Context(), SessionUserIDKey))
 			active, err := uac.IsUserActive(r.Context(), userID)
 			if err != nil {
 				if errors.Is(err, model.ErrorUserNotFound) {
