@@ -34,7 +34,8 @@ type userActiveChecker interface {
 // Authenticate is [Middleware] to authenticate users.
 // After authentication, the user ID is stored in the request context, and can be retrieved using [GetUserIDFromContext].
 // If there is no session, the middleware does nothing and just calls the next handler.
-// If there is no user (anymore) that's in the session, or the user is inactive, the middleware destroys the session.
+// If there is no user (anymore) but the ID is in the session, or the user is inactive,
+// the middleware destroys the session and calls the next handler.
 func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveChecker) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
