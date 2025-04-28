@@ -134,7 +134,7 @@ type mockPermissionsChecker struct {
 	err            error
 }
 
-func (m *mockPermissionsChecker) HasPermissions(ctx context.Context, userID *model.ID, permissions []string) (bool, error) {
+func (m *mockPermissionsChecker) HasPermissions(ctx context.Context, userID model.ID, permissions []string) (bool, error) {
 	return m.hasPermissions, m.err
 }
 

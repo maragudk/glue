@@ -96,7 +96,7 @@ func GetUserIDFromContext(ctx context.Context) *model.ID {
 }
 
 type permissionsChecker interface {
-	HasPermissions(ctx context.Context, userID *model.ID, permissions []string) (bool, error)
+	HasPermissions(ctx context.Context, userID model.ID, permissions []string) (bool, error)
 }
 
 func Authorize(log *slog.Logger, pc permissionsChecker, permissions ...string) Middleware {
@@ -109,7 +109,7 @@ func Authorize(log *slog.Logger, pc permissionsChecker, permissions ...string) M
 				return
 			}
 
-			hasPermissions, err := pc.HasPermissions(r.Context(), userID, permissions)
+			hasPermissions, err := pc.HasPermissions(r.Context(), *userID, permissions)
 			if err != nil {
 				log.Info("Error checking permissions", "error", err, "userID", userID, "permissions", permissions)
 				http.Error(w, "error checking permissions", http.StatusInternalServerError)
