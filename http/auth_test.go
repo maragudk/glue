@@ -128,3 +128,87 @@ func TestAuthenticate(t *testing.T) {
 		})
 	}
 }
+
+type mockPermissionsChecker struct {
+	hasPermissions bool
+	err            error
+}
+
+func (m *mockPermissionsChecker) HasPermissions(ctx context.Context, userID *model.ID, permissions []string) (bool, error) {
+	return m.hasPermissions, m.err
+}
+
+func TestAuthorize(t *testing.T) {
+	tests := []struct {
+		name                    string
+		userIDInContext         bool
+		hasPermissions          bool
+		hasPermissionsErr       error
+		expectStatus            int
+		expectNextHandlerCalled bool
+		expectRedirectToLogin   bool
+	}{
+		{
+			name:                    "no user ID in context",
+			userIDInContext:         false,
+			expectStatus:            http.StatusTemporaryRedirect,
+			expectNextHandlerCalled: false,
+			expectRedirectToLogin:   true,
+		},
+		{
+			name:                    "user has permissions",
+			userIDInContext:         true,
+			hasPermissions:          true,
+			expectStatus:            http.StatusOK,
+			expectNextHandlerCalled: true,
+		},
+		{
+			name:                    "user does not have permissions",
+			userIDInContext:         true,
+			hasPermissions:          false,
+			expectStatus:            http.StatusForbidden,
+			expectNextHandlerCalled: false,
+		},
+		{
+			name:                    "error checking permissions",
+			userIDInContext:         true,
+			hasPermissionsErr:       errors.New("oh no"),
+			expectStatus:            http.StatusInternalServerError,
+			expectNextHandlerCalled: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pc := &mockPermissionsChecker{
+				hasPermissions: test.hasPermissions,
+				err:            test.hasPermissionsErr,
+			}
+
+			authorize := ghttp.Authorize(slog.New(slog.DiscardHandler), pc, "read", "write")
+
+			var called bool
+			h := authorize(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+
+			if test.userIDInContext {
+				userID := model.ID("u_123")
+				ctx := context.WithValue(req.Context(), ghttp.ContextKey("userID"), &userID)
+				req = req.WithContext(ctx)
+			}
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			is.Equal(t, test.expectStatus, rec.Code)
+			is.Equal(t, test.expectNextHandlerCalled, called)
+
+			if test.expectRedirectToLogin {
+				is.Equal(t, "/login?redirect=%2Fprotected", rec.Header().Get("Location"))
+			}
+		})
+	}
+}
