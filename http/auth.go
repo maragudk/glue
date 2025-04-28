@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 
 	"maragu.dev/gloo/model"
 )
@@ -92,4 +93,35 @@ func GetUserIDFromContext(ctx context.Context) *model.ID {
 	}
 
 	return id.(*model.ID)
+}
+
+type permissionsChecker interface {
+	HasPermissions(ctx context.Context, userID *model.ID, permissions []string) (bool, error)
+}
+
+func Authorize(log *slog.Logger, pc permissionsChecker, permissions ...string) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			userID := GetUserIDFromContext(r.Context())
+
+			if userID == nil {
+				http.Redirect(w, r, "/login?redirect="+url.QueryEscape(r.URL.Path), http.StatusTemporaryRedirect)
+				return
+			}
+
+			hasPermissions, err := pc.HasPermissions(r.Context(), userID, permissions)
+			if err != nil {
+				log.Info("Error checking permissions", "error", err, "userID", userID, "permissions", permissions)
+				http.Error(w, "error checking permissions", http.StatusInternalServerError)
+				return
+			}
+
+			if !hasPermissions {
+				http.Error(w, "unauthorized", http.StatusForbidden)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
