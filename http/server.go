@@ -3,27 +3,33 @@ package http
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/go-chi/chi/v5"
+
+	"maragu.dev/gloo/html"
 )
 
 type Server struct {
-	log    *slog.Logger
-	mux    *chi.Mux
-	port   int
-	server *http.Server
-	sm     *scs.SessionManager
+	baseURL            string
+	htmlPage           html.PageFunc
+	httpRouterInjector func(*Router)
+	log                *slog.Logger
+	r                  *Router
+	server             *http.Server
+	sm                 *scs.SessionManager
 }
 
 type NewServerOptions struct {
-	Log          *slog.Logger
-	Port         int
-	SecureCookie bool
+	Address            string
+	BaseURL            string
+	HTMLPage           html.PageFunc
+	HTTPRouterInjector func(*Router)
+	Log                *slog.Logger
+	SecureCookie       bool
 }
 
 func NewServer(opts NewServerOptions) *Server {
@@ -31,8 +37,8 @@ func NewServer(opts NewServerOptions) *Server {
 		opts.Log = slog.New(slog.DiscardHandler)
 	}
 
-	if opts.Port == 0 {
-		opts.Port = 8080
+	if opts.Address == "" {
+		opts.Address = ":8080"
 	}
 
 	mux := chi.NewRouter()
@@ -43,11 +49,13 @@ func NewServer(opts NewServerOptions) *Server {
 	sm.Cookie.SameSite = http.SameSiteStrictMode
 
 	return &Server{
-		log:  opts.Log,
-		mux:  mux,
-		port: opts.Port,
+		baseURL:            opts.BaseURL,
+		htmlPage:           opts.HTMLPage,
+		httpRouterInjector: opts.HTTPRouterInjector,
+		log:                opts.Log,
+		r:                  &Router{Mux: mux},
 		server: &http.Server{
-			Addr:         fmt.Sprintf(":%d", opts.Port),
+			Addr:         opts.Address,
 			Handler:      mux,
 			IdleTimeout:  time.Minute,
 			ReadTimeout:  10 * time.Second,
@@ -59,9 +67,9 @@ func NewServer(opts NewServerOptions) *Server {
 
 // Start the server by setting up routes and listening on the supplied address.
 func (s *Server) Start() error {
-	s.log.Info("Starting server", "address", fmt.Sprintf("http://localhost:%d", s.port))
+	s.log.Info("Starting server", "address", s.baseURL)
 
-	s.registerRoutes()
+	s.setupRoutes()
 
 	if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
