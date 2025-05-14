@@ -68,12 +68,12 @@ func (h *Helper) Connect(ctx context.Context) error {
 		// - Set busy timeout, so concurrent writers wait on each other instead of erroring immediately
 		// - Enable foreign key checks
 		// - Enable immediate transaction locking, so transactions that are upgraded to write transactions can't fail with a busy error
-		h.path += "?_journal=WAL&_timeout=5000&_fk=true&_txlock=immediate"
+		path := h.path + "?_journal=WAL&_timeout=5000&_fk=true&_txlock=immediate"
 
-		h.log.Info("Starting database", "path", h.path)
+		h.log.Info("Starting database", "path", path)
 
 		var err error
-		h.DB, err = sqlx.ConnectContext(ctx, "sqlite3", h.path)
+		h.DB, err = sqlx.ConnectContext(ctx, "sqlite3", path)
 		if err != nil {
 			return err
 		}
