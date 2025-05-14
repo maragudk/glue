@@ -38,8 +38,12 @@ func NewHelper(opts NewHelperOptions) *Helper {
 	}
 
 	return &Helper{
-		log: opts.Log,
-		url: opts.URL,
+		connectionMaxIdleTime: opts.ConnectionMaxIdleTime,
+		connectionMaxLifetime: opts.ConnectionMaxLifetime,
+		log:                   opts.Log,
+		maxIdleConnections:    opts.MaxIdleConnections,
+		maxOpenConnections:    opts.MaxOpenConnections,
+		url:                   opts.URL,
 	}
 }
 
