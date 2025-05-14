@@ -2,6 +2,7 @@ package postgrestest
 
 import (
 	"context"
+	"log/slog"
 	"math/rand/v2"
 	"strings"
 	"sync"
@@ -67,9 +68,10 @@ func connect(t *testing.T, name string) (*postgres.Helper, func(t *testing.T)) {
 	t.Helper()
 
 	h := postgres.NewHelper(postgres.NewHelperOptions{
-		URL:                env.GetStringOrDefault("DATABASE_URL", "postgres://test:test@localhost:5433/"+name),
-		MaxOpenConnections: 10,
+		Log:                slog.New(slog.NewTextHandler(&testWriter{t: t}, nil)),
 		MaxIdleConnections: 10,
+		MaxOpenConnections: 10,
+		URL:                env.GetStringOrDefault("DATABASE_URL", "postgres://test:test@localhost:5433/"+name),
 	})
 	if err := h.Connect(t.Context()); err != nil {
 		t.Fatal(err)
