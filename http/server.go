@@ -79,10 +79,10 @@ func (s *Server) Start() error {
 }
 
 // Stop the Server gracefully, waiting for existing HTTP connections to finish.
-func (s *Server) Stop() error {
+func (s *Server) Stop(ctx context.Context) error {
 	s.log.Info("Stopping server")
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancel()
 
 	if err := s.server.Shutdown(ctx); err != nil {
