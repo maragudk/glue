@@ -1,4 +1,4 @@
-package postgres
+package sql
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/jmoiron/sqlx"
 	"maragu.dev/errors"
 )
@@ -19,16 +18,26 @@ type Helper struct {
 	log                   *slog.Logger
 	maxIdleConnections    int
 	maxOpenConnections    int
+	path                  string
 	url                   string
 }
 
 type NewHelperOptions struct {
+	Log      *slog.Logger
+	Postgres PostgresOptions
+	SQLite   SQLiteOptions
+}
+
+type PostgresOptions struct {
 	ConnectionMaxIdleTime time.Duration
 	ConnectionMaxLifetime time.Duration
-	Log                   *slog.Logger
 	MaxIdleConnections    int
 	MaxOpenConnections    int
 	URL                   string
+}
+
+type SQLiteOptions struct {
+	Path string
 }
 
 // NewHelper with the given options.
@@ -39,12 +48,13 @@ func NewHelper(opts NewHelperOptions) *Helper {
 	}
 
 	return &Helper{
-		connectionMaxIdleTime: opts.ConnectionMaxIdleTime,
-		connectionMaxLifetime: opts.ConnectionMaxLifetime,
+		connectionMaxIdleTime: opts.Postgres.ConnectionMaxIdleTime,
+		connectionMaxLifetime: opts.Postgres.ConnectionMaxLifetime,
 		log:                   opts.Log,
-		maxIdleConnections:    opts.MaxIdleConnections,
-		maxOpenConnections:    opts.MaxOpenConnections,
-		url:                   opts.URL,
+		maxIdleConnections:    opts.Postgres.MaxIdleConnections,
+		maxOpenConnections:    opts.Postgres.MaxOpenConnections,
+		url:                   opts.Postgres.URL,
+		path:                  opts.SQLite.Path,
 	}
 }
 
@@ -52,25 +62,46 @@ func (h *Helper) Connect(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	scrubbedUrl := scrubURL(h.url)
+	switch {
+	case h.path != "":
+		// - Set WAL mode (not strictly necessary each time because it's persisted in the database, but good for first run)
+		// - Set busy timeout, so concurrent writers wait on each other instead of erroring immediately
+		// - Enable foreign key checks
+		// - Enable immediate transaction locking, so transactions that are upgraded to write transactions can't fail with a busy error
+		h.path += "?_journal=WAL&_timeout=5000&_fk=true&_txlock=immediate"
 
-	h.log.Info("Connecting to database", "url", scrubbedUrl)
+		h.log.Info("Starting database", "path", h.path)
 
-	var err error
-	h.DB, err = sqlx.ConnectContext(ctx, "pgx", h.url)
-	if err != nil {
-		return err
+		var err error
+		h.DB, err = sqlx.ConnectContext(ctx, "sqlite3", h.path)
+		if err != nil {
+			return err
+		}
+
+	case h.url != "":
+		scrubbedUrl := scrubURL(h.url)
+
+		h.log.Info("Connecting to database", "url", scrubbedUrl)
+
+		var err error
+		h.DB, err = sqlx.ConnectContext(ctx, "pgx", h.url)
+		if err != nil {
+			return err
+		}
+
+		h.log.Debug("Setting connection pool options",
+			"max open connections", h.maxOpenConnections,
+			"max idle connections", h.maxIdleConnections,
+			"connection max lifetime", h.connectionMaxLifetime,
+			"connection max idle time", h.connectionMaxIdleTime)
+		h.DB.SetMaxOpenConns(h.maxOpenConnections)
+		h.DB.SetMaxIdleConns(h.maxIdleConnections)
+		h.DB.SetConnMaxLifetime(h.connectionMaxLifetime)
+		h.DB.SetConnMaxIdleTime(h.connectionMaxIdleTime)
+
+	default:
+		panic("neither postgres url nor sqlite path given")
 	}
-
-	h.log.Debug("Setting connection pool options",
-		"max open connections", h.maxOpenConnections,
-		"max idle connections", h.maxIdleConnections,
-		"connection max lifetime", h.connectionMaxLifetime,
-		"connection max idle time", h.connectionMaxIdleTime)
-	h.DB.SetMaxOpenConns(h.maxOpenConnections)
-	h.DB.SetMaxIdleConns(h.maxIdleConnections)
-	h.DB.SetConnMaxLifetime(h.connectionMaxLifetime)
-	h.DB.SetConnMaxIdleTime(h.connectionMaxIdleTime)
 
 	return nil
 }

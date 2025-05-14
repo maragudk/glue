@@ -1,16 +1,25 @@
-package postgres_test
+package sqlitetest_test
 
 import (
 	"testing"
 
 	"maragu.dev/is"
 
-	"maragu.dev/gloo/postgrestest"
+	"maragu.dev/gloo/sqlitetest"
 )
+
+func TestHelper_Ping(t *testing.T) {
+	t.Run("can ping", func(t *testing.T) {
+		db := sqlitetest.NewHelper(t)
+
+		err := db.Ping(t.Context())
+		is.NotError(t, err)
+	})
+}
 
 func TestHelper_Migrate(t *testing.T) {
 	t.Run("can migrate down and back up", func(t *testing.T) {
-		h := postgrestest.NewHelper(t)
+		h := sqlitetest.NewHelper(t)
 
 		err := h.MigrateDown(t.Context())
 		is.NotError(t, err)

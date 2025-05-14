@@ -9,15 +9,16 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"maragu.dev/env"
 
-	"maragu.dev/gloo/postgres"
+	"maragu.dev/gloo/sql"
 )
 
 var once sync.Once
 
 // NewHelper for testing.
-func NewHelper(t *testing.T) *postgres.Helper {
+func NewHelper(t *testing.T) *sql.Helper {
 	t.Helper()
 
 	_ = env.Load("../.env.test")
@@ -64,14 +65,16 @@ func migrateTemplate1(t *testing.T) {
 	}
 }
 
-func connect(t *testing.T, name string) (*postgres.Helper, func(t *testing.T)) {
+func connect(t *testing.T, name string) (*sql.Helper, func(t *testing.T)) {
 	t.Helper()
 
-	h := postgres.NewHelper(postgres.NewHelperOptions{
-		Log:                slog.New(slog.NewTextHandler(&testWriter{t: t}, nil)),
-		MaxIdleConnections: 10,
-		MaxOpenConnections: 10,
-		URL:                env.GetStringOrDefault("DATABASE_URL", "postgres://test:test@localhost:5433/"+name),
+	h := sql.NewHelper(sql.NewHelperOptions{
+		Log: slog.New(slog.NewTextHandler(&testWriter{t: t}, nil)),
+		Postgres: sql.PostgresOptions{
+			MaxIdleConnections: 10,
+			MaxOpenConnections: 10,
+			URL:                env.GetStringOrDefault("DATABASE_URL", "postgres://test:test@localhost:5433/"+name),
+		},
 	})
 	if err := h.Connect(t.Context()); err != nil {
 		t.Fatal(err)
