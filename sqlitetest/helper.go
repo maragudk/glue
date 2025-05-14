@@ -1,7 +1,6 @@
 package sqlitetest
 
 import (
-	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
