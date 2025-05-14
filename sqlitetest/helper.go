@@ -34,7 +34,7 @@ func NewHelper(t *testing.T) *sql.Helper {
 		t.Fatal(err)
 	}
 
-	if err := h.MigrateUp(context.Background()); err != nil {
+	if err := h.MigrateUp(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 
