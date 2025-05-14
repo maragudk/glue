@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"net/url"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -51,7 +52,9 @@ func (h *Helper) Connect(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	h.log.Info("Connecting to database", "url", h.url)
+	scrubbedUrl := scrubURL(h.url)
+
+	h.log.Info("Connecting to database", "url", scrubbedUrl)
 
 	var err error
 	h.DB, err = sqlx.ConnectContext(ctx, "pgx", h.url)
@@ -70,6 +73,17 @@ func (h *Helper) Connect(ctx context.Context) error {
 	h.DB.SetConnMaxIdleTime(h.connectionMaxIdleTime)
 
 	return nil
+}
+
+func scrubURL(connectionURL string) string {
+	u, err := url.Parse(connectionURL)
+	if err != nil {
+		panic("error parsing connection url")
+	}
+	if _, ok := u.User.Password(); ok {
+		u.User = url.UserPassword(u.User.Username(), "xxx")
+	}
+	return u.String()
 }
 
 // InTransaction runs callback in a transaction, and makes sure to handle rollbacks, commits etc.
