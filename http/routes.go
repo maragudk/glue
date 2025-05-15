@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/go-chi/chi/v5/middleware"
-	"maragu.dev/gloo/model"
+	"maragu.dev/glue/model"
 	"maragu.dev/httph"
 )
 

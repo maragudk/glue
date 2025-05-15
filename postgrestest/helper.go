@@ -12,7 +12,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"maragu.dev/env"
 
-	"maragu.dev/gloo/sql"
+	"maragu.dev/glue/sql"
 )
 
 var once sync.Once

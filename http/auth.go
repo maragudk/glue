@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"maragu.dev/gloo/model"
+	"maragu.dev/glue/model"
 )
 
 const contextUserIDKey = ContextKey("userID")

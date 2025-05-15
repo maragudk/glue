@@ -1,4 +1,4 @@
-module maragu.dev/gloo
+module maragu.dev/glue
 
 go 1.24
 

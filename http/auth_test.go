@@ -10,8 +10,8 @@ import (
 
 	"maragu.dev/is"
 
-	ghttp "maragu.dev/gloo/http"
-	"maragu.dev/gloo/model"
+	ghttp "maragu.dev/glue/http"
+	"maragu.dev/glue/model"
 )
 
 type mockSessionManager struct {

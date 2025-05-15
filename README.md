@@ -1,16 +1,16 @@
-# gloo
+# glue
 
 <img src="logo.jpg" alt="Logo" width="300" align="right">
 
 [![Docs](https://pkg.go.dev/badge/maragu.dev/gloo)](https://pkg.go.dev/maragu.dev/gloo)
 [![CI](https://github.com/maragudk/gloo/actions/workflows/ci.yml/badge.svg)](https://github.com/maragudk/gloo/actions/workflows/ci.yml)
 
-_gloo_ (glue!) is a collection of models, functions, and methods I often use in services.
+_glue_ is a collection of glue code that I often use in projects.
 
-Mainly for internal use, feel free to use or be inspired.
+Mainly for internal use, but feel free to use or be inspired.
 
 ```shell
-go get maragu.dev/gloo
+go get maragu.dev/glue
 ```
 
 Made with ✨sparkles✨ by [maragu](https://www.maragu.dev/).

@@ -1,5 +1,5 @@
-create table gloo (
-  id text primary key
+create table glue (
+  version text primary key
 );
 
-insert into gloo (id) values ('1');
+insert into glue (version) values ('1');

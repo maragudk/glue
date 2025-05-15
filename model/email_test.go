@@ -3,7 +3,7 @@ package model_test
 import (
 	"testing"
 
-	"maragu.dev/gloo/model"
+	"maragu.dev/glue/model"
 	"maragu.dev/is"
 )
 

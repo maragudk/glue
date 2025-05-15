@@ -9,7 +9,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"maragu.dev/env"
 
-	"maragu.dev/gloo/sql"
+	"maragu.dev/glue/sql"
 )
 
 // NewHelper for testing.

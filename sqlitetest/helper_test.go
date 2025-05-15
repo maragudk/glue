@@ -5,7 +5,7 @@ import (
 
 	"maragu.dev/is"
 
-	"maragu.dev/gloo/sqlitetest"
+	"maragu.dev/glue/sqlitetest"
 )
 
 func TestHelper_Ping(t *testing.T) {
@@ -32,9 +32,8 @@ func TestHelper_Migrate(t *testing.T) {
 		is.NotError(t, err)
 		is.True(t, len(version) > 0)
 
-		var id string
-		err = h.Get(t.Context(), &id, `select id from gloo`)
+		err = h.Get(t.Context(), &version, `select version from glue`)
 		is.NotError(t, err)
-		is.Equal(t, id, "1")
+		is.Equal(t, version, "1")
 	})
 }

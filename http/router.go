@@ -7,7 +7,7 @@ import (
 	. "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/http"
 
-	"maragu.dev/gloo/html"
+	"maragu.dev/glue/html"
 )
 
 type Router struct {

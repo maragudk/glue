@@ -1,1 +1,1 @@
-drop table gloo;
+drop table glue;

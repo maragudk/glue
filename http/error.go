@@ -7,7 +7,7 @@ import (
 	. "maragu.dev/gomponents/http"
 	"maragu.dev/httph"
 
-	"maragu.dev/gloo/html"
+	"maragu.dev/glue/html"
 )
 
 func NotFound(page html.PageFunc) http.HandlerFunc {
