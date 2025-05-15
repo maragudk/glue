@@ -4,7 +4,11 @@ package model
 type Error string
 
 const (
-	ErrorUserNotFound = Error("user not found")
+	ErrorEmailConflict = Error("email conflict")
+	ErrorTokenExpired  = Error("token expired")
+	ErrorTokenNotFound = Error("token not found")
+	ErrorUserInactive  = Error("user inactive")
+	ErrorUserNotFound  = Error("user not found")
 )
 
 // Error satisfies [error].
