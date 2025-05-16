@@ -27,6 +27,7 @@ func (s *Server) setupRoutes() {
 	r.Group(func(r *Router) {
 		r.Use(httph.NoClickjacking, httph.ContentSecurityPolicy(func(opts *httph.ContentSecurityPolicyOptions) {
 			opts.ManifestSrc = "'self'"
+			opts.ConnectSrc = "'self'"
 		}))
 		r.Use(s.sm.LoadAndSave, Authenticate(s.log, s.sm, &mockUserActiveChecker{}))
 
