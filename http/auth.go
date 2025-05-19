@@ -29,7 +29,7 @@ type sessionGetterDestroyer interface {
 }
 
 type userActiveChecker interface {
-	IsUserActive(ctx context.Context, id model.ID) (bool, error)
+	IsUserActive(ctx context.Context, id model.UserID) (bool, error)
 }
 
 // Authenticate is [Middleware] to authenticate users.
@@ -46,7 +46,7 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 			}
 
 			// Get the user from the database, and destroy the session if the user is not found
-			userID := model.ID(sgd.GetString(r.Context(), SessionUserIDKey))
+			userID := model.UserID(sgd.GetString(r.Context(), SessionUserIDKey))
 			active, err := uac.IsUserActive(r.Context(), userID)
 			if err != nil {
 				if errors.Is(err, model.ErrorUserNotFound) {
@@ -86,17 +86,17 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 }
 
 // GetUserIDFromContext, which may be nil if the user is not authenticated.
-func GetUserIDFromContext(ctx context.Context) *model.ID {
+func GetUserIDFromContext(ctx context.Context) *model.UserID {
 	id := ctx.Value(contextUserIDKey)
 	if id == nil {
 		return nil
 	}
 
-	return id.(*model.ID)
+	return id.(*model.UserID)
 }
 
 type permissionsChecker interface {
-	HasPermissions(ctx context.Context, userID model.ID, permissions []string) (bool, error)
+	HasPermissions(ctx context.Context, id model.UserID, permissions []string) (bool, error)
 }
 
 func Authorize(log *slog.Logger, pc permissionsChecker, permissions ...string) Middleware {

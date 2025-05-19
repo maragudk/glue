@@ -40,6 +40,6 @@ func (s *Server) setupRoutes() {
 // TODO remove
 type mockUserActiveChecker struct{}
 
-func (m *mockUserActiveChecker) IsUserActive(ctx context.Context, id model.ID) (bool, error) {
+func (m *mockUserActiveChecker) IsUserActive(ctx context.Context, id model.UserID) (bool, error) {
 	return true, nil
 }
