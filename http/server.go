@@ -20,7 +20,6 @@ type Server struct {
 	log                *slog.Logger
 	r                  *Router
 	server             *http.Server
-	sessionStore       scs.Store
 	sm                 *scs.SessionManager
 	userActiveChecker  userActiveChecker
 }
