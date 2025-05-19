@@ -38,7 +38,7 @@ type mockUserActiveChecker struct {
 	err    error
 }
 
-func (m *mockUserActiveChecker) IsUserActive(ctx context.Context, id model.ID) (bool, error) {
+func (m *mockUserActiveChecker) IsUserActive(ctx context.Context, id model.UserID) (bool, error) {
 	return m.active, m.err
 }
 
@@ -106,7 +106,7 @@ func TestAuthenticate(t *testing.T) {
 			authenticate := ghttp.Authenticate(slog.New(slog.DiscardHandler), sm, userActiveChecker)
 
 			var called bool
-			var userID *model.ID
+			var userID *model.UserID
 			h := authenticate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				called = true
 				userID = ghttp.GetUserIDFromContext(r.Context())
@@ -134,7 +134,7 @@ type mockPermissionsChecker struct {
 	err            error
 }
 
-func (m *mockPermissionsChecker) HasPermissions(ctx context.Context, userID model.ID, permissions []string) (bool, error) {
+func (m *mockPermissionsChecker) HasPermissions(ctx context.Context, id model.UserID, permissions []string) (bool, error) {
 	return m.hasPermissions, m.err
 }
 
@@ -195,7 +195,7 @@ func TestAuthorize(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 
 			if test.userIDInContext {
-				userID := model.ID("u_123")
+				userID := model.UserID("u_123")
 				ctx := context.WithValue(req.Context(), ghttp.ContextKey("userID"), &userID)
 				req = req.WithContext(ctx)
 			}
