@@ -1,10 +1,7 @@
 package http
 
 import (
-	"context"
-
 	"github.com/go-chi/chi/v5/middleware"
-	"maragu.dev/glue/model"
 	"maragu.dev/httph"
 )
 
@@ -29,17 +26,10 @@ func (s *Server) setupRoutes() {
 			opts.ManifestSrc = "'self'"
 			opts.ConnectSrc = "'self'"
 		}))
-		r.Use(s.sm.LoadAndSave, Authenticate(s.log, s.sm, &mockUserActiveChecker{}))
+		r.Use(s.sm.LoadAndSave, Authenticate(s.log, s.sm, s.userActiveChecker))
 
 		if s.httpRouterInjector != nil {
 			s.httpRouterInjector(r)
 		}
 	})
-}
-
-// TODO remove
-type mockUserActiveChecker struct{}
-
-func (m *mockUserActiveChecker) IsUserActive(ctx context.Context, id model.UserID) (bool, error) {
-	return true, nil
 }

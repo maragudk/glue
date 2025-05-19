@@ -3,6 +3,7 @@ package http
 import (
 	"net/http"
 
+	"github.com/alexedwards/scs/v2"
 	"github.com/go-chi/chi/v5"
 	. "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/http"
@@ -12,36 +13,40 @@ import (
 
 type Router struct {
 	Mux chi.Router
+	SM  *scs.SessionManager
 }
 
 func (r *Router) Get(path string, cb func(props html.PageProps) (Node, error)) {
 	r.Mux.Get(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		return cb(getProps(r))
+		return cb(getProps(w, r))
 	}))
 }
 
 func (r *Router) Post(path string, cb func(props html.PageProps) (Node, error)) {
 	r.Mux.Post(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		return cb(getProps(r))
+		return cb(getProps(w, r))
 	}))
 }
 
-func getProps(r *http.Request) html.PageProps {
+func getProps(w http.ResponseWriter, r *http.Request) html.PageProps {
+	userID := GetUserIDFromContext(r.Context())
 	return html.PageProps{
-		Ctx: r.Context(),
-		Req: r,
+		Ctx:    r.Context(),
+		R:      r,
+		UserID: userID,
+		W:      w,
 	}
 }
 
 func (r *Router) Group(cb func(r *Router)) {
 	r.Mux.Group(func(mux chi.Router) {
-		cb(&Router{Mux: mux})
+		cb(&Router{Mux: mux, SM: r.SM})
 	})
 }
 
 func (r *Router) Route(pattern string, cb func(r *Router)) {
 	r.Mux.Route(pattern, func(mux chi.Router) {
-		cb(&Router{Mux: mux})
+		cb(&Router{Mux: mux, SM: r.SM})
 	})
 }
 

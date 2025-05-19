@@ -7,13 +7,18 @@ import (
 	. "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/components"
 	. "maragu.dev/gomponents/html"
+
+	"maragu.dev/glue/model"
 )
 
 type PageProps struct {
 	Title       string
 	Description string
 	Ctx         context.Context
-	Req         *http.Request
+	R           *http.Request
+	W           http.ResponseWriter
+	HideAuth    bool
+	UserID      *model.UserID
 }
 
 type PageFunc = func(props PageProps, children ...Node) Node

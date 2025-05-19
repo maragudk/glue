@@ -20,7 +20,9 @@ type Server struct {
 	log                *slog.Logger
 	r                  *Router
 	server             *http.Server
+	sessionStore       scs.Store
 	sm                 *scs.SessionManager
+	userActiveChecker  userActiveChecker
 }
 
 type NewServerOptions struct {
@@ -30,6 +32,8 @@ type NewServerOptions struct {
 	HTTPRouterInjector func(*Router)
 	Log                *slog.Logger
 	SecureCookie       bool
+	SessionStore       scs.Store
+	UserActiveChecker  userActiveChecker
 }
 
 func NewServer(opts NewServerOptions) *Server {
@@ -44,6 +48,9 @@ func NewServer(opts NewServerOptions) *Server {
 	mux := chi.NewRouter()
 
 	sm := scs.New()
+	if opts.SessionStore != nil {
+		sm.Store = opts.SessionStore
+	}
 	sm.Lifetime = 365 * 24 * time.Hour
 	sm.Cookie.Secure = opts.SecureCookie
 	sm.Cookie.SameSite = http.SameSiteStrictMode
@@ -53,7 +60,7 @@ func NewServer(opts NewServerOptions) *Server {
 		htmlPage:           opts.HTMLPage,
 		httpRouterInjector: opts.HTTPRouterInjector,
 		log:                opts.Log,
-		r:                  &Router{Mux: mux},
+		r:                  &Router{Mux: mux, SM: sm},
 		server: &http.Server{
 			Addr:         opts.Address,
 			Handler:      mux,
@@ -61,7 +68,8 @@ func NewServer(opts NewServerOptions) *Server {
 			ReadTimeout:  10 * time.Second,
 			WriteTimeout: 10 * time.Second,
 		},
-		sm: sm,
+		sm:                sm,
+		userActiveChecker: opts.UserActiveChecker,
 	}
 }
 
