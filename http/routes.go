@@ -15,7 +15,9 @@ func (s *Server) setupRoutes() {
 	r.Use(middleware.RequestID)
 
 	protection := csrf.New()
-	protection.AddTrustedOrigin(s.baseURL)
+	if err := protection.AddTrustedOrigin(s.baseURL); err != nil {
+		panic("error adding CSRF protection (with " + s.baseURL + "): " + err.Error())
+	}
 	r.Use(protection.Handler)
 
 	r.NotFound(NotFound(s.htmlPage))
