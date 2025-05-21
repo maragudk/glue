@@ -62,6 +62,7 @@ func NewServer(opts NewServerOptions) *Server {
 		r:                  &Router{Mux: mux, SM: sm},
 		server: &http.Server{
 			Addr:         opts.Address,
+			ErrorLog:     slog.NewLogLogger(opts.Log.Handler(), slog.LevelError),
 			Handler:      mux,
 			IdleTimeout:  time.Minute,
 			ReadTimeout:  10 * time.Second,
