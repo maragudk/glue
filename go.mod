@@ -3,6 +3,7 @@ module maragu.dev/glue
 go 1.24
 
 require (
+	filippo.io/csrf v0.0.0-20250517103426-cfb6fbb0fbe3
 	github.com/alexedwards/scs/pgxstore v0.0.0-20250417082927-ab20b3feb5e9
 	github.com/alexedwards/scs/sqlite3store v0.0.0-20250417082927-ab20b3feb5e9
 	github.com/alexedwards/scs/v2 v2.8.0
