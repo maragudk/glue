@@ -1,6 +1,7 @@
 package http
 
 import (
+	"filippo.io/csrf"
 	"github.com/go-chi/chi/v5/middleware"
 	"maragu.dev/httph"
 )
@@ -12,6 +13,11 @@ func (s *Server) setupRoutes() {
 	r.Use(middleware.Compress(5))
 	r.Use(middleware.RealIP)
 	r.Use(middleware.RequestID)
+
+	protection := csrf.New()
+	protection.AddTrustedOrigin(s.baseURL)
+	r.Use(protection.Handler)
+
 	r.NotFound(NotFound(s.htmlPage))
 
 	r.Group(func(r *Router) {
