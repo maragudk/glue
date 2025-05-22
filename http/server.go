@@ -11,28 +11,31 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"maragu.dev/glue/html"
+	"maragu.dev/httph"
 )
 
 type Server struct {
 	baseURL            string
+	csp                func(opts *httph.ContentSecurityPolicyOptions)
 	htmlPage           html.PageFunc
 	httpRouterInjector func(*Router)
 	log                *slog.Logger
 	r                  *Router
 	server             *http.Server
-	sm                 *scs.SessionManager
 	userActiveChecker  userActiveChecker
 }
 
 type NewServerOptions struct {
 	Address            string
 	BaseURL            string
+	CSP                func(opts *httph.ContentSecurityPolicyOptions)
 	HTMLPage           html.PageFunc
 	HTTPRouterInjector func(*Router)
 	Log                *slog.Logger
 	SecureCookie       bool
 	SessionStore       scs.Store
 	UserActiveChecker  userActiveChecker
+	WriteTimeout       time.Duration
 }
 
 func NewServer(opts NewServerOptions) *Server {
@@ -42,6 +45,10 @@ func NewServer(opts NewServerOptions) *Server {
 
 	if opts.Address == "" {
 		opts.Address = ":8080"
+	}
+
+	if opts.WriteTimeout == 0 {
+		opts.WriteTimeout = 10 * time.Second
 	}
 
 	mux := chi.NewRouter()
@@ -56,6 +63,7 @@ func NewServer(opts NewServerOptions) *Server {
 
 	return &Server{
 		baseURL:            opts.BaseURL,
+		csp:                opts.CSP,
 		htmlPage:           opts.HTMLPage,
 		httpRouterInjector: opts.HTTPRouterInjector,
 		log:                opts.Log,
@@ -66,9 +74,8 @@ func NewServer(opts NewServerOptions) *Server {
 			Handler:      mux,
 			IdleTimeout:  time.Minute,
 			ReadTimeout:  10 * time.Second,
-			WriteTimeout: 10 * time.Second,
+			WriteTimeout: opts.WriteTimeout,
 		},
-		sm:                sm,
 		userActiveChecker: opts.UserActiveChecker,
 	}
 }

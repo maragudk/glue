@@ -30,11 +30,8 @@ func (s *Server) setupRoutes() {
 
 	// HTML
 	r.Group(func(r *Router) {
-		r.Use(httph.NoClickjacking, httph.ContentSecurityPolicy(func(opts *httph.ContentSecurityPolicyOptions) {
-			opts.ManifestSrc = "'self'"
-			opts.ConnectSrc = "'self'"
-		}))
-		r.Use(s.sm.LoadAndSave, Authenticate(s.log, s.sm, s.userActiveChecker))
+		r.Use(httph.NoClickjacking, httph.ContentSecurityPolicy(s.csp))
+		r.Use(s.r.SM.LoadAndSave, Authenticate(s.log, s.r.SM, s.userActiveChecker))
 
 		if s.httpRouterInjector != nil {
 			s.httpRouterInjector(r)
