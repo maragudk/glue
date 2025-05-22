@@ -96,10 +96,10 @@ func GetUserIDFromContext(ctx context.Context) *model.UserID {
 }
 
 type permissionsChecker interface {
-	HasPermissions(ctx context.Context, id model.UserID, permissions []string) (bool, error)
+	HasPermissions(ctx context.Context, id model.UserID, permissions []model.Permission) (bool, error)
 }
 
-func Authorize(log *slog.Logger, pc permissionsChecker, permissions ...string) Middleware {
+func Authorize(log *slog.Logger, pc permissionsChecker, permissions ...model.Permission) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			userID := GetUserIDFromContext(r.Context())
