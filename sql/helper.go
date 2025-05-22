@@ -9,10 +9,12 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	"maragu.dev/errors"
+	"maragu.dev/goqite"
 )
 
 type Helper struct {
 	DB                    *sqlx.DB
+	JobsQ                 *goqite.Queue
 	connectionMaxIdleTime time.Duration
 	connectionMaxLifetime time.Duration
 	log                   *slog.Logger
@@ -53,14 +55,16 @@ func NewHelper(opts NewHelperOptions) *Helper {
 		log:                   opts.Log,
 		maxIdleConnections:    opts.Postgres.MaxIdleConnections,
 		maxOpenConnections:    opts.Postgres.MaxOpenConnections,
-		url:                   opts.Postgres.URL,
 		path:                  opts.SQLite.Path,
+		url:                   opts.Postgres.URL,
 	}
 }
 
 func (h *Helper) Connect(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+
+	var sqlFlavor goqite.SQLFlavor
 
 	switch {
 	case h.path != "":
@@ -77,6 +81,8 @@ func (h *Helper) Connect(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+
+		sqlFlavor = goqite.SQLFlavorSQLite
 
 	case h.url != "":
 		scrubbedUrl := scrubURL(h.url)
@@ -99,9 +105,17 @@ func (h *Helper) Connect(ctx context.Context) error {
 		h.DB.SetConnMaxLifetime(h.connectionMaxLifetime)
 		h.DB.SetConnMaxIdleTime(h.connectionMaxIdleTime)
 
+		sqlFlavor = goqite.SQLFlavorPostgreSQL
+
 	default:
 		panic("neither postgres url nor sqlite path given")
 	}
+
+	h.JobsQ = goqite.New(goqite.NewOpts{
+		DB:        h.DB.DB,
+		Name:      "jobs",
+		SQLFlavor: sqlFlavor,
+	})
 
 	return nil
 }
