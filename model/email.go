@@ -33,3 +33,5 @@ func (e EmailAddress) String() string {
 func (e EmailAddress) ToLower() EmailAddress {
 	return EmailAddress(strings.TrimSpace(strings.ToLower(string(e))))
 }
+
+type Keywords = map[string]string
