@@ -1,6 +1,8 @@
 package jobs
 
 import (
+	"context"
+	"database/sql"
 	"time"
 
 	"maragu.dev/goqite"
@@ -8,6 +10,8 @@ import (
 )
 
 type Runner = jobs.Runner
+
+type Func = jobs.Func
 
 type NewRunnerOpts struct {
 	Extend       time.Duration
@@ -30,4 +34,12 @@ func NewRunner(opts NewRunnerOpts) *Runner {
 
 type logger interface {
 	Info(msg string, args ...any)
+}
+
+func Create(ctx context.Context, q *goqite.Queue, name string, m []byte) error {
+	return jobs.Create(ctx, q, name, m)
+}
+
+func CreateTx(ctx context.Context, tx *sql.Tx, q *goqite.Queue, name string, m []byte) error {
+	return jobs.CreateTx(ctx, tx, q, name, m)
 }
