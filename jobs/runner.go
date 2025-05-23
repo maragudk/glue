@@ -36,10 +36,12 @@ type logger interface {
 	Info(msg string, args ...any)
 }
 
-func Create(ctx context.Context, q *goqite.Queue, name string, m []byte) error {
-	return jobs.Create(ctx, q, name, m)
+func Create(ctx context.Context, q *goqite.Queue, name string, m goqite.Message) error {
+	_, err := jobs.Create(ctx, q, name, m)
+	return err
 }
 
-func CreateTx(ctx context.Context, tx *sql.Tx, q *goqite.Queue, name string, m []byte) error {
-	return jobs.CreateTx(ctx, tx, q, name, m)
+func CreaCreateTx(ctx context.Context, tx *sql.Tx, q *goqite.Queue, name string, m goqite.Message) error {
+	_, err := jobs.CreateTx(ctx, tx, q, name, m)
+	return err
 }
