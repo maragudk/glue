@@ -41,7 +41,9 @@ func Create(ctx context.Context, q *goqite.Queue, name string, m goqite.Message)
 	return err
 }
 
-func CreaCreateTx(ctx context.Context, tx *sql.Tx, q *goqite.Queue, name string, m goqite.Message) error {
+func CreateTx(ctx context.Context, tx *sql.Tx, q *goqite.Queue, name string, m goqite.Message) error {
 	_, err := jobs.CreateTx(ctx, tx, q, name, m)
 	return err
 }
+
+type Message = goqite.Message
