@@ -17,6 +17,7 @@ type Helper struct {
 	JobsQ                 *goqite.Queue
 	connectionMaxIdleTime time.Duration
 	connectionMaxLifetime time.Duration
+	jobQueueTimeout       time.Duration
 	log                   *slog.Logger
 	maxIdleConnections    int
 	maxOpenConnections    int
@@ -25,6 +26,7 @@ type Helper struct {
 }
 
 type NewHelperOptions struct {
+	JobQueue JobQueueOptions
 	Log      *slog.Logger
 	Postgres PostgresOptions
 	SQLite   SQLiteOptions
@@ -42,6 +44,10 @@ type SQLiteOptions struct {
 	Path string
 }
 
+type JobQueueOptions struct {
+	Timeout time.Duration
+}
+
 // NewHelper with the given options.
 // If no logger is provided, logs are discarded.
 func NewHelper(opts NewHelperOptions) *Helper {
@@ -52,6 +58,7 @@ func NewHelper(opts NewHelperOptions) *Helper {
 	return &Helper{
 		connectionMaxIdleTime: opts.Postgres.ConnectionMaxIdleTime,
 		connectionMaxLifetime: opts.Postgres.ConnectionMaxLifetime,
+		jobQueueTimeout:       opts.JobQueue.Timeout,
 		log:                   opts.Log,
 		maxIdleConnections:    opts.Postgres.MaxIdleConnections,
 		maxOpenConnections:    opts.Postgres.MaxOpenConnections,
@@ -115,6 +122,7 @@ func (h *Helper) Connect(ctx context.Context) error {
 		DB:        h.DB.DB,
 		Name:      "jobs",
 		SQLFlavor: sqlFlavor,
+		Timeout:   h.jobQueueTimeout,
 	})
 
 	return nil
