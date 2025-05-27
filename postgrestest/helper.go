@@ -73,7 +73,7 @@ func connect(t *testing.T, name string) (*sql.Helper, func(t *testing.T)) {
 		Postgres: sql.PostgresOptions{
 			MaxIdleConnections: 10,
 			MaxOpenConnections: 10,
-			URL:                env.GetStringOrDefault("DATABASE_URL", "postgres://test:test@localhost:5433/"+name),
+			URL:                env.GetStringOrDefault("DATABASE_URL", "postgres://test:test@localhost:5434/"+name),
 		},
 	})
 	if err := h.Connect(t.Context()); err != nil {
