@@ -29,3 +29,10 @@ func TestEmailAddress_IsValid(t *testing.T) {
 		}
 	})
 }
+
+func TestEmailAddress_Local(t *testing.T) {
+	t.Run("returns the local part", func(t *testing.T) {
+		e := model.EmailAddress("me@example.com")
+		is.Equal(t, "me", e.Local())
+	})
+}

@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -28,6 +29,12 @@ func (e EmailAddress) IsValid() bool {
 
 func (e EmailAddress) String() string {
 	return string(e)
+}
+
+var _ fmt.Stringer = EmailAddress("")
+
+func (e EmailAddress) Local() string {
+	return emailAddressMatcher.FindStringSubmatch(string(e))[1]
 }
 
 func (e EmailAddress) ToLower() EmailAddress {
