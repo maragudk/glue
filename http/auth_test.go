@@ -8,9 +8,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+	g "maragu.dev/gomponents"
 	"maragu.dev/is"
 
-	ghttp "maragu.dev/glue/http"
+	"maragu.dev/glue/html"
+	gluehttp "maragu.dev/glue/http"
 	"maragu.dev/glue/model"
 )
 
@@ -103,13 +106,13 @@ func TestAuthenticate(t *testing.T) {
 			sm := &mockSessionManager{exists: test.sessionExists}
 			userActiveChecker := &mockUserActiveChecker{active: test.userActive, err: test.userActiveErr}
 
-			authenticate := ghttp.Authenticate(slog.New(slog.DiscardHandler), sm, userActiveChecker)
+			authenticate := gluehttp.Authenticate(slog.New(slog.DiscardHandler), sm, userActiveChecker)
 
 			var called bool
 			var userID *model.UserID
 			h := authenticate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				called = true
-				userID = ghttp.GetUserIDFromContext(r.Context())
+				userID = gluehttp.GetUserIDFromContext(r.Context())
 			}))
 
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -185,7 +188,7 @@ func TestAuthorize(t *testing.T) {
 				err:            test.hasPermissionsErr,
 			}
 
-			authorize := ghttp.Authorize(slog.New(slog.DiscardHandler), pc, "read", "write")
+			authorize := gluehttp.Authorize(slog.New(slog.DiscardHandler), pc, "read", "write")
 
 			var called bool
 			h := authorize(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -196,7 +199,7 @@ func TestAuthorize(t *testing.T) {
 
 			if test.userIDInContext {
 				userID := model.UserID("u_123")
-				ctx := context.WithValue(req.Context(), ghttp.ContextKey("userID"), &userID)
+				ctx := context.WithValue(req.Context(), gluehttp.ContextKey("userID"), &userID)
 				req = req.WithContext(ctx)
 			}
 
@@ -209,6 +212,147 @@ func TestAuthorize(t *testing.T) {
 			if test.expectRedirectToLogin {
 				is.Equal(t, "/login?redirect=%2Fprotected", rec.Header().Get("Location"))
 			}
+		})
+	}
+}
+
+func TestLogout(t *testing.T) {
+	tests := []struct {
+		name                 string
+		userIDInContext      bool
+		destroyError         error
+		queryRedirect        string
+		expectStatus         int
+		expectRedirect       string
+		expectDestroySession bool
+	}{
+		{
+			name:                 "successful logout with default redirect",
+			userIDInContext:      true,
+			expectStatus:         http.StatusFound,
+			expectRedirect:       "/",
+			expectDestroySession: true,
+		},
+		{
+			name:                 "successful logout with custom redirect",
+			userIDInContext:      true,
+			queryRedirect:        "/dashboard",
+			expectStatus:         http.StatusFound,
+			expectRedirect:       "/dashboard",
+			expectDestroySession: true,
+		},
+		{
+			name:                 "no user in context",
+			userIDInContext:      false,
+			expectStatus:         http.StatusFound,
+			expectRedirect:       "/",
+			expectDestroySession: false,
+		},
+		{
+			name:                 "no user in context with custom redirect",
+			userIDInContext:      false,
+			queryRedirect:        "/dashboard",
+			expectStatus:         http.StatusFound,
+			expectRedirect:       "/dashboard",
+			expectDestroySession: false,
+		},
+		{
+			name:                 "destroy session error",
+			userIDInContext:      true,
+			destroyError:         errors.New("destroy error"),
+			expectStatus:         http.StatusInternalServerError,
+			expectDestroySession: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sm := &mockSessionDestroyer{err: test.destroyError}
+
+			mux := chi.NewRouter()
+			router := &gluehttp.Router{Mux: mux}
+			mockPage := func(props html.PageProps, children ...g.Node) g.Node {
+				return g.Text("error")
+			}
+			gluehttp.Logout(router, slog.New(slog.DiscardHandler), sm, mockPage)
+
+			req := httptest.NewRequest(http.MethodPost, "/logout?redirect="+test.queryRedirect, nil)
+
+			if test.userIDInContext {
+				userID := model.UserID("u_123")
+				ctx := context.WithValue(req.Context(), gluehttp.ContextKey("userID"), &userID)
+				req = req.WithContext(ctx)
+			}
+
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			is.Equal(t, test.expectStatus, rec.Code)
+			is.Equal(t, test.expectDestroySession, sm.destroyed)
+			is.Equal(t, test.expectRedirect, rec.Header().Get("Location"))
+		})
+	}
+}
+
+type mockSessionDestroyer struct {
+	destroyed bool
+	err       error
+}
+
+func (m *mockSessionDestroyer) Destroy(ctx context.Context) error {
+	m.destroyed = true
+	return m.err
+}
+
+func TestRedirectIfAuthenticated(t *testing.T) {
+	tests := []struct {
+		name                    string
+		userIDInContext         bool
+		redirectTo              string
+		expectStatus            int
+		expectRedirect          string
+		expectNextHandlerCalled bool
+	}{
+		{
+			name:                    "user authenticated",
+			userIDInContext:         true,
+			redirectTo:              "/dashboard",
+			expectStatus:            http.StatusTemporaryRedirect,
+			expectRedirect:          "/dashboard",
+			expectNextHandlerCalled: false,
+		},
+		{
+			name:                    "user not authenticated",
+			userIDInContext:         false,
+			redirectTo:              "/dashboard",
+			expectStatus:            http.StatusOK,
+			expectNextHandlerCalled: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			middleware := gluehttp.RedirectIfAuthenticated(test.redirectTo)
+
+			var called bool
+			h := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "/login", nil)
+
+			if test.userIDInContext {
+				userID := model.UserID("u_123")
+				ctx := context.WithValue(req.Context(), gluehttp.ContextKey("userID"), &userID)
+				req = req.WithContext(ctx)
+			}
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			is.Equal(t, test.expectStatus, rec.Code)
+			is.Equal(t, test.expectNextHandlerCalled, called)
+			is.Equal(t, test.expectRedirect, rec.Header().Get("Location"))
 		})
 	}
 }

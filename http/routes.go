@@ -28,6 +28,8 @@ func (s *Server) setupRoutes() {
 		Static(r.Mux)
 	})
 
+	Logout(r, s.log, s.r.SM, s.htmlPage)
+
 	// HTML
 	r.Group(func(r *Router) {
 		r.Use(httph.NoClickjacking, httph.ContentSecurityPolicy(s.csp))

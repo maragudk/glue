@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"net/url"
 
+	g "maragu.dev/gomponents"
+
+	"maragu.dev/glue/html"
 	"maragu.dev/glue/model"
 )
 
@@ -118,6 +121,47 @@ func Authorize(log *slog.Logger, pc permissionsChecker, permissions ...model.Per
 
 			if !hasPermissions {
 				http.Error(w, "unauthorized", http.StatusForbidden)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// Logout creates an http.Handler for logging out.
+// It just destroys the current user session.
+func Logout(r *Router, log *slog.Logger, sd sessionDestroyer, page html.PageFunc) {
+	r.Post("/logout", func(props html.PageProps) (g.Node, error) {
+		redirect := props.R.URL.Query().Get("redirect")
+		if redirect == "" {
+			redirect = "/"
+		}
+
+		userID := GetUserIDFromContext(props.Ctx)
+		if userID == nil {
+			http.Redirect(props.W, props.R, redirect, http.StatusFound)
+			return nil, nil
+		}
+
+		if err := sd.Destroy(props.Ctx); err != nil {
+			log.Error("Error logging out", "error", err)
+			return html.ErrorPage(page), err
+		}
+
+		http.Redirect(props.W, props.R, redirect, http.StatusFound)
+
+		return nil, nil
+	})
+}
+
+func RedirectIfAuthenticated(redirect string) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			userID := GetUserIDFromContext(r.Context())
+
+			if userID != nil {
+				http.Redirect(w, r, redirect, http.StatusTemporaryRedirect)
 				return
 			}
 
