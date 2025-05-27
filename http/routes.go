@@ -28,15 +28,17 @@ func (s *Server) setupRoutes() {
 		Static(r.Mux)
 	})
 
-	Logout(r, s.log, s.r.SM, s.htmlPage)
-
 	// HTML
 	r.Group(func(r *Router) {
 		r.Use(httph.NoClickjacking, httph.ContentSecurityPolicy(s.csp))
 		r.Use(s.r.SM.LoadAndSave, Authenticate(s.log, s.r.SM, s.userActiveChecker))
 
-		if s.httpRouterInjector != nil {
-			s.httpRouterInjector(r)
-		}
+		Logout(r, s.log, s.r.SM, s.htmlPage)
+
+		r.Group(func(r *Router) {
+			if s.httpRouterInjector != nil {
+				s.httpRouterInjector(r)
+			}
+		})
 	})
 }
