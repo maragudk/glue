@@ -59,7 +59,6 @@ func NewServer(opts NewServerOptions) *Server {
 	}
 	sm.Lifetime = 365 * 24 * time.Hour
 	sm.Cookie.Secure = opts.SecureCookie
-	sm.Cookie.SameSite = http.SameSiteStrictMode
 
 	return &Server{
 		baseURL:            opts.BaseURL,
