@@ -29,12 +29,12 @@ func (r *Router) Post(path string, cb func(props html.PageProps) (Node, error)) 
 }
 
 func getProps(w http.ResponseWriter, r *http.Request) html.PageProps {
-	userID := GetUserIDFromContext(r.Context())
 	return html.PageProps{
-		Ctx:    r.Context(),
-		R:      r,
-		UserID: userID,
-		W:      w,
+		Ctx:         r.Context(),
+		R:           r,
+		UserID:      GetUserIDFromContext(r.Context()),
+		W:           w,
+		Permissions: GetPermissionsFromContext(r.Context()),
 	}
 }
 

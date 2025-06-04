@@ -16,7 +16,7 @@ require (
 	maragu.dev/gomponents v1.1.0
 	maragu.dev/goqite v0.3.2-0.20250523114653-39aac52b0ede
 	maragu.dev/httph v0.3.7
-	maragu.dev/is v0.3.0
+	maragu.dev/is v0.3.1
 	maragu.dev/migrate v0.6.0
 )
 

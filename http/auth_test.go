@@ -141,6 +141,15 @@ func (m *mockPermissionsChecker) HasPermissions(ctx context.Context, id model.Us
 	return m.hasPermissions, m.err
 }
 
+type mockPermissionsGetter struct {
+	permissions []model.Permission
+	err         error
+}
+
+func (m *mockPermissionsGetter) GetPermissions(ctx context.Context, id model.UserID) ([]model.Permission, error) {
+	return m.permissions, m.err
+}
+
 func TestAuthorize(t *testing.T) {
 	tests := []struct {
 		name                    string
@@ -212,6 +221,78 @@ func TestAuthorize(t *testing.T) {
 			if test.expectRedirectToLogin {
 				is.Equal(t, "/login?redirect=%2Fprotected", rec.Header().Get("Location"))
 			}
+		})
+	}
+}
+
+func TestSavePermissionsInContext(t *testing.T) {
+	tests := []struct {
+		name                    string
+		userIDInContext         bool
+		permissions             []model.Permission
+		getPermissionsErr       error
+		expectStatus            int
+		expectNextHandlerCalled bool
+	}{
+		{
+			name:                    "no user ID in context",
+			userIDInContext:         false,
+			expectStatus:            http.StatusOK,
+			expectNextHandlerCalled: true,
+		},
+		{
+			name:                    "user with permissions",
+			userIDInContext:         true,
+			permissions:             []model.Permission{"read", "write"},
+			expectStatus:            http.StatusOK,
+			expectNextHandlerCalled: true,
+		},
+		{
+			name:                    "user with no permissions",
+			userIDInContext:         true,
+			permissions:             []model.Permission{},
+			expectStatus:            http.StatusOK,
+			expectNextHandlerCalled: true,
+		},
+		{
+			name:                    "error getting permissions",
+			userIDInContext:         true,
+			getPermissionsErr:       errors.New("oh no"),
+			expectStatus:            http.StatusInternalServerError,
+			expectNextHandlerCalled: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pg := &mockPermissionsGetter{
+				permissions: test.permissions,
+				err:         test.getPermissionsErr,
+			}
+
+			savePermissions := gluehttp.SavePermissionsInContext(slog.New(slog.DiscardHandler), pg)
+
+			var called bool
+			var permissions []model.Permission
+			h := savePermissions(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				permissions = gluehttp.GetPermissionsFromContext(r.Context())
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+			if test.userIDInContext {
+				userID := model.UserID("u_123")
+				ctx := context.WithValue(req.Context(), gluehttp.ContextKey("userID"), &userID)
+				req = req.WithContext(ctx)
+			}
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			is.Equal(t, test.expectStatus, rec.Code)
+			is.Equal(t, test.expectNextHandlerCalled, called)
+			is.EqualSlice(t, test.permissions, permissions)
 		})
 	}
 }
