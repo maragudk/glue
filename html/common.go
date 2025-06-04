@@ -3,6 +3,7 @@ package html
 import (
 	"context"
 	"net/http"
+	"slices"
 
 	. "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/components"
@@ -19,6 +20,11 @@ type PageProps struct {
 	W           http.ResponseWriter
 	HideAuth    bool
 	UserID      *model.UserID
+	Permissions []model.Permission
+}
+
+func (p PageProps) HasPermission(perm model.Permission) bool {
+	return slices.Contains(p.Permissions, perm)
 }
 
 type PageFunc = func(props PageProps, children ...Node) Node

@@ -14,6 +14,7 @@ import (
 )
 
 const contextUserIDKey = ContextKey("userID")
+const contextPermissionsKey = ContextKey("permissions")
 
 const SessionUserIDKey = "userID"
 
@@ -127,6 +128,41 @@ func Authorize(log *slog.Logger, pc permissionsChecker, permissions ...model.Per
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+type permissionsGetter interface {
+	GetPermissions(ctx context.Context, id model.UserID) ([]model.Permission, error)
+}
+
+func SavePermissionsInContext(log *slog.Logger, pg permissionsGetter) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			userID := GetUserIDFromContext(r.Context())
+
+			if userID == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			permissions, err := pg.GetPermissions(r.Context(), *userID)
+			if err != nil {
+				log.Error("Error getting permissions", "error", err, "userID", userID)
+				http.Error(w, "error getting permissions", http.StatusInternalServerError)
+				return
+			}
+
+			ctx := context.WithValue(r.Context(), contextPermissionsKey, permissions)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+func GetPermissionsFromContext(ctx context.Context) []model.Permission {
+	permissions := ctx.Value(contextPermissionsKey)
+	if permissions == nil {
+		return nil
+	}
+	return permissions.([]model.Permission)
 }
 
 // Logout creates an http.Handler for logging out.

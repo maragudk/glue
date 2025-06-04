@@ -33,6 +33,10 @@ func (s *Server) setupRoutes() {
 		r.Use(httph.NoClickjacking, httph.ContentSecurityPolicy(s.csp))
 		r.Use(s.r.SM.LoadAndSave, Authenticate(s.log, s.r.SM, s.userActiveChecker))
 
+		if s.permissionsGetter != nil {
+			r.Use(SavePermissionsInContext(s.log, s.permissionsGetter))
+		}
+
 		Logout(r, s.log, s.r.SM, s.htmlPage)
 
 		r.Group(func(r *Router) {

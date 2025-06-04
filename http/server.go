@@ -20,6 +20,7 @@ type Server struct {
 	htmlPage           html.PageFunc
 	httpRouterInjector func(*Router)
 	log                *slog.Logger
+	permissionsGetter  permissionsGetter
 	r                  *Router
 	server             *http.Server
 	userActiveChecker  userActiveChecker
@@ -32,6 +33,7 @@ type NewServerOptions struct {
 	HTMLPage           html.PageFunc
 	HTTPRouterInjector func(*Router)
 	Log                *slog.Logger
+	PermissionsGetter  permissionsGetter
 	SecureCookie       bool
 	SessionStore       scs.Store
 	UserActiveChecker  userActiveChecker
@@ -66,6 +68,7 @@ func NewServer(opts NewServerOptions) *Server {
 		htmlPage:           opts.HTMLPage,
 		httpRouterInjector: opts.HTTPRouterInjector,
 		log:                opts.Log,
+		permissionsGetter:  opts.PermissionsGetter,
 		r:                  &Router{Mux: mux, SM: sm},
 		server: &http.Server{
 			Addr:         opts.Address,
