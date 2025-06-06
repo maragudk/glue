@@ -10,8 +10,9 @@ import (
 	"github.com/alexedwards/scs/v2"
 	"github.com/go-chi/chi/v5"
 
-	"maragu.dev/glue/html"
 	"maragu.dev/httph"
+
+	"maragu.dev/glue/html"
 )
 
 type Server struct {

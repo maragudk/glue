@@ -3,9 +3,10 @@ package sql_test
 import (
 	"testing"
 
+	"maragu.dev/is"
+
 	internaltesting "maragu.dev/glue/internal/testing"
 	"maragu.dev/glue/sql"
-	"maragu.dev/is"
 )
 
 func TestHelper_Connect(t *testing.T) {
