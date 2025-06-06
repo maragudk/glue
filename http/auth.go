@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 
 	g "maragu.dev/gomponents"
 
@@ -99,11 +100,7 @@ func GetUserIDFromContext(ctx context.Context) *model.UserID {
 	return id.(*model.UserID)
 }
 
-type permissionsChecker interface {
-	HasPermissions(ctx context.Context, id model.UserID, permissions []model.Permission) (bool, error)
-}
-
-func Authorize(log *slog.Logger, pc permissionsChecker, permissions ...model.Permission) Middleware {
+func Authorize(log *slog.Logger, pg permissionsGetter, requiredPermissions ...model.Permission) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			userID := GetUserIDFromContext(r.Context())
@@ -113,14 +110,22 @@ func Authorize(log *slog.Logger, pc permissionsChecker, permissions ...model.Per
 				return
 			}
 
-			hasPermissions, err := pc.HasPermissions(r.Context(), *userID, permissions)
+			permissions, err := pg.GetPermissions(r.Context(), *userID)
 			if err != nil {
-				log.Info("Error checking permissions", "error", err, "userID", userID, "permissions", permissions)
-				http.Error(w, "error checking permissions", http.StatusInternalServerError)
+				log.Info("Error getting permissions", "error", err, "userID", userID)
+				http.Error(w, "error getting permissions", http.StatusInternalServerError)
 				return
 			}
 
-			if !hasPermissions {
+			hasRequiredPermissions := true
+			for _, requiredPermission := range requiredPermissions {
+				if !slices.Contains(permissions, requiredPermission) {
+					hasRequiredPermissions = false
+					break
+				}
+			}
+
+			if !hasRequiredPermissions {
 				http.Error(w, "unauthorized", http.StatusForbidden)
 				return
 			}
