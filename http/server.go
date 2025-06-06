@@ -2,7 +2,9 @@ package http
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -61,6 +63,7 @@ func NewServer(opts NewServerOptions) *Server {
 		sm.Store = opts.SessionStore
 	}
 	sm.Lifetime = 365 * 24 * time.Hour
+	sm.Cookie.Name = fmt.Sprintf("session_%x", sha256.Sum256([]byte(opts.BaseURL)))
 	sm.Cookie.Secure = opts.SecureCookie
 
 	return &Server{
