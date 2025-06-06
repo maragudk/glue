@@ -132,15 +132,6 @@ func TestAuthenticate(t *testing.T) {
 	}
 }
 
-type mockPermissionsChecker struct {
-	hasPermissions bool
-	err            error
-}
-
-func (m *mockPermissionsChecker) HasPermissions(ctx context.Context, id model.UserID, permissions []model.Permission) (bool, error) {
-	return m.hasPermissions, m.err
-}
-
 type mockPermissionsGetter struct {
 	permissions []model.Permission
 	err         error
@@ -154,8 +145,9 @@ func TestAuthorize(t *testing.T) {
 	tests := []struct {
 		name                    string
 		userIDInContext         bool
-		hasPermissions          bool
-		hasPermissionsErr       error
+		userPermissions         []model.Permission
+		getPermissionsErr       error
+		requiredPermissions     []model.Permission
 		expectStatus            int
 		expectNextHandlerCalled bool
 		expectRedirectToLogin   bool
@@ -163,28 +155,40 @@ func TestAuthorize(t *testing.T) {
 		{
 			name:                    "no user ID in context",
 			userIDInContext:         false,
+			requiredPermissions:     []model.Permission{"read", "write"},
 			expectStatus:            http.StatusTemporaryRedirect,
 			expectNextHandlerCalled: false,
 			expectRedirectToLogin:   true,
 		},
 		{
-			name:                    "user has permissions",
+			name:                    "user has all required permissions",
 			userIDInContext:         true,
-			hasPermissions:          true,
+			userPermissions:         []model.Permission{"read", "write", "admin"},
+			requiredPermissions:     []model.Permission{"read", "write"},
 			expectStatus:            http.StatusOK,
 			expectNextHandlerCalled: true,
 		},
 		{
-			name:                    "user does not have permissions",
+			name:                    "user missing one permission",
 			userIDInContext:         true,
-			hasPermissions:          false,
+			userPermissions:         []model.Permission{"read"},
+			requiredPermissions:     []model.Permission{"read", "write"},
 			expectStatus:            http.StatusForbidden,
 			expectNextHandlerCalled: false,
 		},
 		{
-			name:                    "error checking permissions",
+			name:                    "user has no permissions",
 			userIDInContext:         true,
-			hasPermissionsErr:       errors.New("oh no"),
+			userPermissions:         []model.Permission{},
+			requiredPermissions:     []model.Permission{"read"},
+			expectStatus:            http.StatusForbidden,
+			expectNextHandlerCalled: false,
+		},
+		{
+			name:                    "error getting permissions",
+			userIDInContext:         true,
+			getPermissionsErr:       errors.New("oh no"),
+			requiredPermissions:     []model.Permission{"read"},
 			expectStatus:            http.StatusInternalServerError,
 			expectNextHandlerCalled: false,
 		},
@@ -192,12 +196,12 @@ func TestAuthorize(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			pc := &mockPermissionsChecker{
-				hasPermissions: test.hasPermissions,
-				err:            test.hasPermissionsErr,
+			pg := &mockPermissionsGetter{
+				permissions: test.userPermissions,
+				err:         test.getPermissionsErr,
 			}
 
-			authorize := gluehttp.Authorize(slog.New(slog.DiscardHandler), pc, "read", "write")
+			authorize := gluehttp.Authorize(slog.New(slog.DiscardHandler), pg, test.requiredPermissions...)
 
 			var called bool
 			h := authorize(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

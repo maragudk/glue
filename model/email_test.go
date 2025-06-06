@@ -3,8 +3,9 @@ package model_test
 import (
 	"testing"
 
-	"maragu.dev/glue/model"
 	"maragu.dev/is"
+
+	"maragu.dev/glue/model"
 )
 
 func TestEmailAddress_IsValid(t *testing.T) {
