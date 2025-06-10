@@ -12,8 +12,6 @@ import (
 )
 
 func TestBucket(t *testing.T) {
-	s3test.SkipIfShort(t)
-
 	t.Run("puts, gets, lists, and deletes an object", func(t *testing.T) {
 		b := s3test.NewBucket(t)
 
@@ -43,8 +41,6 @@ func TestBucket(t *testing.T) {
 }
 
 func TestBucket_List(t *testing.T) {
-	s3test.SkipIfShort(t)
-
 	t.Run("lists all objects", func(t *testing.T) {
 		b := s3test.NewBucket(t)
 
