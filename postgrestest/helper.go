@@ -21,6 +21,10 @@ var once sync.Once
 func NewHelper(t *testing.T) *sql.Helper {
 	t.Helper()
 
+	if testing.Short() {
+		t.SkipNow()
+	}
+
 	_ = env.Load("../.env.test")
 
 	once.Do(func() {

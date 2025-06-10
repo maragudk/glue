@@ -5,8 +5,8 @@ import (
 
 	"maragu.dev/is"
 
-	internaltesting "maragu.dev/glue/internal/testing"
 	"maragu.dev/glue/sql"
+	internaltesting "maragu.dev/glue/sql/internal/testing"
 )
 
 func TestHelper_Connect(t *testing.T) {

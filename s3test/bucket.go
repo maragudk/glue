@@ -20,6 +20,10 @@ import (
 func NewBucket(t *testing.T) *s3.Bucket {
 	t.Helper()
 
+	if testing.Short() {
+		t.SkipNow()
+	}
+
 	_ = env.Load("../.env.test")
 	_ = env.Load("../../.env.test")
 
@@ -62,15 +66,6 @@ func cleanupBucket(t *testing.T, client *awss3.Client, bucket string) {
 
 	if _, err := client.DeleteBucket(context.WithoutCancel(t.Context()), &awss3.DeleteBucketInput{Bucket: &bucket}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// SkipIfShort skips t if the "-short" flag is passed to "go test".
-func SkipIfShort(t *testing.T) {
-	t.Helper()
-
-	if testing.Short() {
-		t.SkipNow()
 	}
 }
 
