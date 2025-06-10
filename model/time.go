@@ -26,10 +26,6 @@ func (t Time) String() string {
 
 var _ fmt.Stringer = Time{}
 
-func Now() *Time {
-	return &Time{T: time.Now()}
-}
-
 // ParseTime according to [RFC3339Milli] and return in UTC.
 func ParseTime(v string) (Time, error) {
 	t, err := time.Parse(RFC3339Milli, v)
@@ -37,6 +33,16 @@ func ParseTime(v string) (Time, error) {
 		return Time{}, err
 	}
 	return Time{T: t.UTC()}, nil
+}
+
+func (t *Time) Pretty() string {
+	if t == nil {
+		return ""
+	}
+	if t.T.IsZero() {
+		return "-"
+	}
+	return t.T.UTC().Format("2006-01-02 15:04:05 MST")
 }
 
 // Value satisfies [driver.Valuer].
