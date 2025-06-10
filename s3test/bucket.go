@@ -78,23 +78,31 @@ func getAWSConfig(t *testing.T) aws.Config {
 	t.Helper()
 
 	if os.Getenv("AWS_ACCESS_KEY_ID") == "" {
-		os.Setenv("AWS_ACCESS_KEY_ID", "access")
-		defer os.Unsetenv("AWS_ACCESS_KEY_ID")
+		if err := os.Setenv("AWS_ACCESS_KEY_ID", "access"); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.Unsetenv("AWS_ACCESS_KEY_ID") }()
 	}
 
 	if os.Getenv("AWS_SECRET_ACCESS_KEY") == "" {
-		os.Setenv("AWS_SECRET_ACCESS_KEY", "secretsecret")
-		defer os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+		if err := os.Setenv("AWS_SECRET_ACCESS_KEY", "secretsecret"); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.Unsetenv("AWS_SECRET_ACCESS_KEY") }()
 	}
 
 	if os.Getenv("AWS_REGION") == "" {
-		os.Setenv("AWS_REGION", "auto")
-		defer os.Unsetenv("AWS_REGION")
+		if err := os.Setenv("AWS_REGION", "auto"); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.Unsetenv("AWS_REGION") }()
 	}
 
 	if os.Getenv("AWS_ENDPOINT_URL") == "" {
-		os.Setenv("AWS_ENDPOINT_URL", "http://localhost:9002")
-		defer os.Unsetenv("AWS_ENDPOINT_URL")
+		if err := os.Setenv("AWS_ENDPOINT_URL", "http://localhost:9002"); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.Unsetenv("AWS_ENDPOINT_URL") }()
 	}
 
 	c, err := config.LoadDefaultConfig(t.Context())
