@@ -1,8 +1,10 @@
+// Package s3 provides a simpler abstraction for the AWS S3 SDK than the SDK itself provides.
 package s3
 
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -17,7 +19,6 @@ type NewBucketOptions struct {
 	Config    aws.Config
 	Name      string
 	PathStyle bool
-	Endpoint  string
 }
 
 func NewBucket(opts NewBucketOptions) *Bucket {
@@ -27,9 +28,7 @@ func NewBucket(opts NewBucketOptions) *Bucket {
 
 	client := s3.NewFromConfig(opts.Config, func(o *s3.Options) {
 		o.UsePathStyle = opts.PathStyle
-		if opts.Endpoint != "" {
-			o.BaseEndpoint = &opts.Endpoint
-		}
+		o.DisableLogOutputChecksumValidationSkipped = true
 	})
 
 	return &Bucket{
@@ -70,4 +69,33 @@ func (b *Bucket) Delete(ctx context.Context, key string) error {
 		Key:    &key,
 	})
 	return err
+}
+
+func (b *Bucket) GetPresignedURL(ctx context.Context, key string, expires time.Duration) (string, error) {
+	c := s3.NewPresignClient(b.Client, s3.WithPresignExpires(expires))
+
+	req, err := c.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: &b.name,
+		Key:    &key,
+	})
+	if err != nil {
+		return "", err
+	}
+	return req.URL, nil
+}
+
+func (b *Bucket) List(ctx context.Context, prefix string, maxKeys int) ([]string, error) {
+	listObjectsOutput, err := b.Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:  &b.name,
+		MaxKeys: aws.Int32(int32(maxKeys)),
+		Prefix:  &prefix,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var keys []string
+	for _, object := range listObjectsOutput.Contents {
+		keys = append(keys, *object.Key)
+	}
+	return keys, nil
 }

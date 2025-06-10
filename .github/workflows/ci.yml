@@ -26,6 +26,13 @@ jobs:
           POSTGRES_USER: "test"
           POSTGRES_PASSWORD: "test"
           POSTGRES_DB: "template1"
+      minio:
+        image: maragudk/minio-ci
+        ports:
+          - "9002:9000"
+        env:
+          MINIO_ROOT_USER: "access"
+          MINIO_ROOT_PASSWORD: "secretsecret"
 
     steps:
       - name: Checkout

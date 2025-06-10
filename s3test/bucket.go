@@ -1,57 +1,57 @@
+// Package s3test provides test helpers for the s3 package.
 package s3test
 
 import (
 	"context"
+	"crypto/rand"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"maragu.dev/env"
 
-	"maragu.dev/glue/awstest"
 	"maragu.dev/glue/s3"
 )
 
-const (
-	defaultBucket = "testbucket"
-)
+// NewBucket for testing.
+func NewBucket(t *testing.T) *s3.Bucket {
+	t.Helper()
 
-// CreateBucket for testing.
-func CreateBucket(t *testing.T) *s3.Bucket {
-	env.MustLoad("../.env-test")
+	_ = env.Load("../.env.test")
+	_ = env.Load("../../.env.test")
+
+	bucketName := strings.ToLower(rand.Text())
 
 	b := s3.NewBucket(s3.NewBucketOptions{
-		Config:    awstest.GetAWSConfig(t),
-		Name:      defaultBucket,
+		Config:    getAWSConfig(t),
+		Name:      bucketName,
 		PathStyle: true,
-		Endpoint:  awstest.GetS3EndpointURL(t),
 	})
-
-	cleanupBucket(t, b.Client, defaultBucket)
-	_, err := b.Client.CreateBucket(context.Background(), &awss3.CreateBucketInput{Bucket: aws.String(defaultBucket)})
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	t.Cleanup(func() {
-		cleanupBucket(t, b.Client, defaultBucket)
+		cleanupBucket(t, b.Client, bucketName)
 	})
+
+	if _, err := b.Client.CreateBucket(t.Context(), &awss3.CreateBucketInput{Bucket: aws.String(bucketName)}); err != nil {
+		t.Fatal(err)
+	}
 
 	return b
 }
 
 func cleanupBucket(t *testing.T, client *awss3.Client, bucket string) {
-	listObjectsOutput, err := client.ListObjects(context.Background(), &awss3.ListObjectsInput{Bucket: &bucket})
+	t.Helper()
+
+	listObjectsOutput, err := client.ListObjects(context.WithoutCancel(t.Context()), &awss3.ListObjectsInput{Bucket: &bucket})
 	if err != nil {
-		if strings.Contains(err.Error(), "NoSuchBucket") {
-			return
-		}
 		t.Fatal(err)
 	}
 
 	for _, o := range listObjectsOutput.Contents {
-		_, err := client.DeleteObject(context.Background(), &awss3.DeleteObjectInput{
+		_, err := client.DeleteObject(context.WithoutCancel(t.Context()), &awss3.DeleteObjectInput{
 			Bucket: &bucket,
 			Key:    o.Key,
 		})
@@ -60,14 +60,46 @@ func cleanupBucket(t *testing.T, client *awss3.Client, bucket string) {
 		}
 	}
 
-	if _, err := client.DeleteBucket(context.Background(), &awss3.DeleteBucketInput{Bucket: &bucket}); err != nil {
+	if _, err := client.DeleteBucket(context.WithoutCancel(t.Context()), &awss3.DeleteBucketInput{Bucket: &bucket}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 // SkipIfShort skips t if the "-short" flag is passed to "go test".
 func SkipIfShort(t *testing.T) {
+	t.Helper()
+
 	if testing.Short() {
 		t.SkipNow()
 	}
+}
+
+func getAWSConfig(t *testing.T) aws.Config {
+	t.Helper()
+
+	if os.Getenv("AWS_ACCESS_KEY_ID") == "" {
+		os.Setenv("AWS_ACCESS_KEY_ID", "access")
+		defer os.Unsetenv("AWS_ACCESS_KEY_ID")
+	}
+
+	if os.Getenv("AWS_SECRET_ACCESS_KEY") == "" {
+		os.Setenv("AWS_SECRET_ACCESS_KEY", "secretsecret")
+		defer os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+	}
+
+	if os.Getenv("AWS_REGION") == "" {
+		os.Setenv("AWS_REGION", "auto")
+		defer os.Unsetenv("AWS_REGION")
+	}
+
+	if os.Getenv("AWS_ENDPOINT_URL") == "" {
+		os.Setenv("AWS_ENDPOINT_URL", "http://localhost:9002")
+		defer os.Unsetenv("AWS_ENDPOINT_URL")
+	}
+
+	c, err := config.LoadDefaultConfig(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
 }
