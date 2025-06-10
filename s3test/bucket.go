@@ -25,6 +25,7 @@ func CreateBucket(t *testing.T) *s3.Bucket {
 		Config:    awstest.GetAWSConfig(t),
 		Name:      defaultBucket,
 		PathStyle: true,
+		Endpoint:  awstest.GetS3EndpointURL(t),
 	})
 
 	cleanupBucket(t, b.Client, defaultBucket)

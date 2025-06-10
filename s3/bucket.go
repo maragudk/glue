@@ -17,6 +17,7 @@ type NewBucketOptions struct {
 	Config    aws.Config
 	Name      string
 	PathStyle bool
+	Endpoint  string
 }
 
 func NewBucket(opts NewBucketOptions) *Bucket {
@@ -26,6 +27,9 @@ func NewBucket(opts NewBucketOptions) *Bucket {
 
 	client := s3.NewFromConfig(opts.Config, func(o *s3.Options) {
 		o.UsePathStyle = opts.PathStyle
+		if opts.Endpoint != "" {
+			o.BaseEndpoint = &opts.Endpoint
+		}
 	})
 
 	return &Bucket{
