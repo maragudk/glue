@@ -160,6 +160,11 @@ func (h *Helper) InTransaction(ctx context.Context, cb func(tx *Tx) error) (err 
 	return nil
 }
 
+// InTx is just an alias for [Helper.InTransaction].
+func (h *Helper) InTx(ctx context.Context, cb func(tx *Tx) error) error {
+	return h.InTransaction(ctx, cb)
+}
+
 // rollback a transaction, handling both the original error and any transaction rollback errors.
 func rollback(tx *sqlx.Tx, err error) error {
 	if txErr := tx.Rollback(); txErr != nil {
