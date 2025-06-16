@@ -57,3 +57,7 @@ func (r *Router) Use(middlewares ...Middleware) {
 func (r *Router) NotFound(h http.HandlerFunc) {
 	r.Mux.NotFound(h)
 }
+
+func GetPathParam(r *http.Request, name string) string {
+	return chi.URLParam(r, name)
+}
