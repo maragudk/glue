@@ -14,7 +14,7 @@ import (
 
 type Helper struct {
 	DB                    *sqlx.DB
-	JobsQ                 *goqite.Queue
+	JobsQ, JobsQCPU       *goqite.Queue
 	connectionMaxIdleTime time.Duration
 	connectionMaxLifetime time.Duration
 	jobQueueTimeout       time.Duration
@@ -118,9 +118,18 @@ func (h *Helper) Connect(ctx context.Context) error {
 		panic("neither postgres url nor sqlite path given")
 	}
 
+	// Regular jobs
 	h.JobsQ = goqite.New(goqite.NewOpts{
 		DB:        h.DB.DB,
 		Name:      "jobs",
+		SQLFlavor: sqlFlavor,
+		Timeout:   h.jobQueueTimeout,
+	})
+
+	// CPU bound jobs
+	h.JobsQCPU = goqite.New(goqite.NewOpts{
+		DB:        h.DB.DB,
+		Name:      "jobs-cpu",
 		SQLFlavor: sqlFlavor,
 		Timeout:   h.jobQueueTimeout,
 	})

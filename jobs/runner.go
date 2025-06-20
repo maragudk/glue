@@ -3,7 +3,6 @@ package jobs
 import (
 	"context"
 	"database/sql"
-	"time"
 
 	"maragu.dev/goqite"
 	"maragu.dev/goqite/jobs"
@@ -13,13 +12,7 @@ type Runner = jobs.Runner
 
 type Func = jobs.Func
 
-type NewRunnerOpts struct {
-	Extend       time.Duration
-	Limit        int
-	Log          logger
-	PollInterval time.Duration
-	Queue        *goqite.Queue
-}
+type NewRunnerOpts = jobs.NewRunnerOpts
 
 // NewRunner just calls [jobs.NewRunner].
 func NewRunner(opts NewRunnerOpts) *Runner {
