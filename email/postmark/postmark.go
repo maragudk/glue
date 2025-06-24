@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -36,6 +37,7 @@ type nameAndEmail = string
 // Sender can send transactional and marketing emails through Postmark.
 // See https://postmarkapp.com/developer
 type Sender struct {
+	appName           string
 	baseURL           string
 	client            *http.Client
 	emails            fs.FS
@@ -48,6 +50,7 @@ type Sender struct {
 }
 
 type NewSenderOptions struct {
+	AppName                   string
 	BaseURL                   string
 	EndpointURL               string
 	Emails                    fs.FS
@@ -71,6 +74,7 @@ func NewSender(opts NewSenderOptions) *Sender {
 	}
 
 	return &Sender{
+		appName:           strings.TrimSpace(opts.AppName),
 		baseURL:           strings.TrimSuffix(opts.BaseURL, "/"),
 		client:            &http.Client{Timeout: 3 * time.Second},
 		emails:            opts.Emails,
@@ -84,7 +88,7 @@ func NewSender(opts NewSenderOptions) *Sender {
 }
 
 func (s *Sender) SendTransactional(ctx context.Context, name string, email model.EmailAddress, subject, preheader, template string, kw model.Keywords) error {
-	return s.send(ctx, transactional, createNameAndEmail(name, email), subject, preheader, template, kw)
+	return s.send(ctx, transactional, name, email, subject, preheader, template, kw)
 }
 
 // requestBody used in [Sender.send].
@@ -99,7 +103,7 @@ type requestBody struct {
 	HtmlBody      string
 }
 
-func (s *Sender) send(ctx context.Context, typ emailType, to nameAndEmail, subject, preheader, template string, keywords model.Keywords) error {
+func (s *Sender) send(ctx context.Context, typ emailType, name string, email model.EmailAddress, subject, preheader, template string, keywords model.Keywords) error {
 	var messageStream string
 	var from nameAndEmail
 	switch typ {
@@ -112,13 +116,15 @@ func (s *Sender) send(ctx context.Context, typ emailType, to nameAndEmail, subje
 	}
 
 	// Keywords that are always included
+	keywords["appName"] = s.appName
 	keywords["baseURL"] = s.baseURL
+	keywords["name"] = name
 
 	err := s.sendRequest(ctx, requestBody{
 		MessageStream: messageStream,
 		From:          from,
 		ReplyTo:       s.replyTo,
-		To:            to,
+		To:            createNameAndEmail(name, email),
 		Subject:       subject,
 		HtmlBody:      getEmail(s.emails, template, preheader, keywords),
 	})
@@ -215,7 +221,7 @@ func getEmail(emails fs.FS, path, preheader string, keywords model.Keywords) str
 	}
 
 	for keyword, replacement := range keywords {
-		email = strings.ReplaceAll(email, "{{"+keyword+"}}", replacement)
+		email = strings.ReplaceAll(email, "{{"+keyword+"}}", template.HTMLEscapeString(replacement))
 	}
 
 	return email
