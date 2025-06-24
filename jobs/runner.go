@@ -16,17 +16,13 @@ type NewRunnerOpts = jobs.NewRunnerOpts
 
 // NewRunner just calls [jobs.NewRunner].
 func NewRunner(opts NewRunnerOpts) *Runner {
-	return jobs.NewRunner(jobs.NewRunnerOpts{
+	return jobs.NewRunner(NewRunnerOpts{
 		Extend:       opts.Extend,
 		Limit:        opts.Limit,
 		Log:          opts.Log,
 		PollInterval: opts.PollInterval,
 		Queue:        opts.Queue,
 	})
-}
-
-type logger interface {
-	Info(msg string, args ...any)
 }
 
 func Create(ctx context.Context, q *goqite.Queue, name string, m goqite.Message) error {
