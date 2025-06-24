@@ -18,29 +18,29 @@ type Router struct {
 
 func (r *Router) Get(path string, cb func(props html.PageProps) (Node, error)) {
 	r.Mux.Get(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		return cb(getProps(w, r))
+		return cb(GetProps(w, r))
 	}))
 }
 
 func (r *Router) Post(path string, cb func(props html.PageProps) (Node, error)) {
 	r.Mux.Post(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		return cb(getProps(w, r))
+		return cb(GetProps(w, r))
 	}))
 }
 
 func (r *Router) Put(path string, cb func(props html.PageProps) (Node, error)) {
 	r.Mux.Put(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		return cb(getProps(w, r))
+		return cb(GetProps(w, r))
 	}))
 }
 
 func (r *Router) Delete(path string, cb func(props html.PageProps) (Node, error)) {
 	r.Mux.Delete(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		return cb(getProps(w, r))
+		return cb(GetProps(w, r))
 	}))
 }
 
-func getProps(w http.ResponseWriter, r *http.Request) html.PageProps {
+func GetProps(w http.ResponseWriter, r *http.Request) html.PageProps {
 	return html.PageProps{
 		Ctx:         r.Context(),
 		R:           r,
