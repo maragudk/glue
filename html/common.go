@@ -29,7 +29,7 @@ func (p PageProps) HasPermission(perm model.Permission) bool {
 
 type PageFunc = func(props PageProps, children ...Node) Node
 
-func FavIcons(name, themeColor string) Node {
+func FavIcons(name string) Node {
 	return Group([]Node{
 		// <link rel="icon" type="image/png" href="/favicon-96x96.png" sizes="96x96" />
 		Link(Rel("icon"), Type("image/png"), Href("/favicon-96x96.png"), Attr("sizes", "96x96")),
