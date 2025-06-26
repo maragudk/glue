@@ -32,7 +32,7 @@ func Pagination(href string, total, limit, offset int) Node {
 }
 
 func PaginationButtonCurrent(page int) Node {
-	return Span(Class("px-3 py-2 text-sm font-medium text-white bg-indigo-600 rounded-md min-w-12 text-center"), Textf("%d", page))
+	return Span(Class("px-3 py-2 text-sm font-medium text-white bg-primary-600 rounded-md min-w-12 text-center"), Textf("%d", page))
 }
 
 func PaginationButtonNavigate(href string, page int) Node {
