@@ -6,6 +6,8 @@ import (
 	"encoding"
 	"fmt"
 	"time"
+
+	"github.com/justincampbell/timeago"
 )
 
 // RFC3339Milli is like time.RFC3339Nano, but with millisecond precision,
@@ -43,6 +45,10 @@ func (t *Time) Pretty() string {
 		return "-"
 	}
 	return t.T.UTC().Format("2006-01-02 15:04:05 MST")
+}
+
+func (t *Time) Ago() string {
+	return timeago.FromTime(t.T)
 }
 
 // Value satisfies [driver.Valuer].
