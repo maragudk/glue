@@ -14,7 +14,7 @@ require (
 	github.com/jackc/pgx/v5 v5.7.5
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/justincampbell/timeago v0.0.0-20160528003754-027f40306f1d
-	github.com/mattn/go-sqlite3 v1.14.29
+	github.com/mattn/go-sqlite3 v1.14.30
 	maragu.dev/env v0.2.0
 	maragu.dev/errors v0.3.0
 	maragu.dev/gomponents v1.1.1-0.20250626090230-a30401d18438
