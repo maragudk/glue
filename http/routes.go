@@ -12,7 +12,7 @@ func (s *Server) setupRoutes() {
 
 	r.Use(middleware.Compress(5))
 	r.Use(middleware.RealIP)
-	r.Use(middleware.RequestID)
+	r.Use(OpenTelemetry)
 
 	protection := csrf.New()
 	if err := protection.AddTrustedOrigin(s.baseURL); err != nil {
