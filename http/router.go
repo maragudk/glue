@@ -5,6 +5,7 @@ import (
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/otel/trace"
 	. "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/http"
 
@@ -12,31 +13,48 @@ import (
 )
 
 type Router struct {
-	Mux chi.Router
-	SM  *scs.SessionManager
+	Mux    chi.Router
+	SM     *scs.SessionManager
+	tracer trace.Tracer
 }
 
 func (r *Router) Get(path string, cb func(props html.PageProps) (Node, error)) {
+	tracer := r.tracer
+
 	r.Mux.Get(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		return cb(GetProps(w, r))
+		ctx, span := tracer.Start(r.Context(), "handler")
+		defer span.End()
+		return cb(GetProps(w, r.WithContext(ctx)))
 	}))
 }
 
 func (r *Router) Post(path string, cb func(props html.PageProps) (Node, error)) {
+	tracer := r.tracer
+
 	r.Mux.Post(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		return cb(GetProps(w, r))
+		ctx, span := tracer.Start(r.Context(), "handler")
+		defer span.End()
+		return cb(GetProps(w, r.WithContext(ctx)))
 	}))
 }
 
 func (r *Router) Put(path string, cb func(props html.PageProps) (Node, error)) {
+	tracer := r.tracer
+
 	r.Mux.Put(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		return cb(GetProps(w, r))
+		ctx, span := tracer.Start(r.Context(), "handler")
+		defer span.End()
+		return cb(GetProps(w, r.WithContext(ctx)))
 	}))
 }
 
 func (r *Router) Delete(path string, cb func(props html.PageProps) (Node, error)) {
+	tracer := r.tracer
+
 	r.Mux.Delete(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		return cb(GetProps(w, r))
+		ctx, span := tracer.Start(r.Context(), "handler")
+		defer span.End()
+		return cb(GetProps(w, r.WithContext(ctx)))
 	}))
 }
 
@@ -52,13 +70,13 @@ func GetProps(w http.ResponseWriter, r *http.Request) html.PageProps {
 
 func (r *Router) Group(cb func(r *Router)) {
 	r.Mux.Group(func(mux chi.Router) {
-		cb(&Router{Mux: mux, SM: r.SM})
+		cb(&Router{Mux: mux, SM: r.SM, tracer: r.tracer})
 	})
 }
 
 func (r *Router) Route(pattern string, cb func(r *Router)) {
 	r.Mux.Route(pattern, func(mux chi.Router) {
-		cb(&Router{Mux: mux, SM: r.SM})
+		cb(&Router{Mux: mux, SM: r.SM, tracer: r.tracer})
 	})
 }
 
