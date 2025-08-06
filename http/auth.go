@@ -139,7 +139,7 @@ func Authorize(log *slog.Logger, pg permissionsGetter, requiredPermissions ...mo
 
 			// Add permissions to the root span
 			if rootSpan := GetRootSpanFromContext(ctx); rootSpan != nil && rootSpan.IsRecording() {
-				permissionStrings := make([]string, len(permissions))
+				var permissionStrings []string
 				for _, p := range permissions {
 					permissionStrings = append(permissionStrings, string(p))
 				}
