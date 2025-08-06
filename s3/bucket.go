@@ -3,11 +3,13 @@ package s3
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -82,16 +84,17 @@ func (b *Bucket) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 		Key:    &key,
 	})
 	if err != nil {
+		var noSuchKeyError *types.NoSuchKey
+		if errors.As(err, &noSuchKeyError) {
+			span.SetStatus(codes.Ok, "")
+			return nil, nil
+		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "get failed")
 		return nil, err
 	}
 
 	span.SetStatus(codes.Ok, "")
-
-	if getObjectOutput == nil {
-		return nil, nil
-	}
 
 	return getObjectOutput.Body, nil
 }
