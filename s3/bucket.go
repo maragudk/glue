@@ -68,8 +68,6 @@ func (b *Bucket) Put(ctx context.Context, key, contentType string, body io.ReadS
 		return err
 	}
 
-	span.SetStatus(codes.Ok, "")
-
 	return nil
 }
 
@@ -86,15 +84,12 @@ func (b *Bucket) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	if err != nil {
 		var noSuchKeyError *types.NoSuchKey
 		if errors.As(err, &noSuchKeyError) {
-			span.SetStatus(codes.Ok, "")
 			return nil, nil
 		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "get failed")
 		return nil, err
 	}
-
-	span.SetStatus(codes.Ok, "")
 
 	return getObjectOutput.Body, nil
 }
@@ -114,8 +109,6 @@ func (b *Bucket) Delete(ctx context.Context, key string) error {
 		span.SetStatus(codes.Error, "delete failed")
 		return err
 	}
-
-	span.SetStatus(codes.Ok, "")
 
 	return nil
 }
@@ -152,8 +145,6 @@ func (b *Bucket) List(ctx context.Context, prefix string, maxKeys int) ([]string
 	for _, object := range listObjectsOutput.Contents {
 		keys = append(keys, *object.Key)
 	}
-
-	span.SetStatus(codes.Ok, "")
 
 	return keys, nil
 }

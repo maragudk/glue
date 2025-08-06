@@ -201,8 +201,6 @@ func (h *Helper) InTx(ctx context.Context, cb func(ctx context.Context, tx *Tx) 
 		return err
 	}
 
-	span.SetStatus(codes.Ok, "")
-
 	return nil
 }
 
@@ -230,8 +228,6 @@ func (h *Helper) Select(ctx context.Context, dest any, query string, args ...any
 		return err
 	}
 
-	span.SetStatus(codes.Ok, "")
-
 	return nil
 }
 
@@ -245,8 +241,6 @@ func (h *Helper) Get(ctx context.Context, dest any, query string, args ...any) e
 		return err
 	}
 
-	span.SetStatus(codes.Ok, "")
-
 	return nil
 }
 
@@ -259,8 +253,6 @@ func (h *Helper) Exec(ctx context.Context, query string, args ...any) error {
 		span.SetStatus(codes.Error, "query failed")
 		return err
 	}
-
-	span.SetStatus(codes.Ok, "")
 
 	return nil
 }
@@ -280,8 +272,6 @@ func (t *Tx) Select(ctx context.Context, dest any, query string, args ...any) er
 		return err
 	}
 
-	span.SetStatus(codes.Ok, "")
-
 	return nil
 }
 
@@ -295,8 +285,6 @@ func (t *Tx) Get(ctx context.Context, dest any, query string, args ...any) error
 		return err
 	}
 
-	span.SetStatus(codes.Ok, "")
-
 	return nil
 }
 
@@ -309,8 +297,6 @@ func (t *Tx) Exec(ctx context.Context, query string, args ...any) error {
 		span.SetStatus(codes.Error, "query failed")
 		return err
 	}
-
-	span.SetStatus(codes.Ok, "")
 
 	return nil
 }
