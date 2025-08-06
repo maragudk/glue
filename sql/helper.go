@@ -221,7 +221,7 @@ func (h *Helper) Ping(ctx context.Context) error {
 }
 
 func (h *Helper) Select(ctx context.Context, dest any, query string, args ...any) error {
-	ctx, span := h.queryTracerStart(ctx, query)
+	ctx, span := h.queryTracerStart(ctx, "select", query)
 	defer span.End()
 
 	if err := h.DB.SelectContext(ctx, dest, query, args...); err != nil {
@@ -230,11 +230,13 @@ func (h *Helper) Select(ctx context.Context, dest any, query string, args ...any
 		return err
 	}
 
+	span.SetStatus(codes.Ok, "")
+
 	return nil
 }
 
 func (h *Helper) Get(ctx context.Context, dest any, query string, args ...any) error {
-	ctx, span := h.queryTracerStart(ctx, query)
+	ctx, span := h.queryTracerStart(ctx, "get", query)
 	defer span.End()
 
 	if err := h.DB.GetContext(ctx, dest, query, args...); err != nil {
@@ -243,11 +245,13 @@ func (h *Helper) Get(ctx context.Context, dest any, query string, args ...any) e
 		return err
 	}
 
+	span.SetStatus(codes.Ok, "")
+
 	return nil
 }
 
 func (h *Helper) Exec(ctx context.Context, query string, args ...any) error {
-	ctx, span := h.queryTracerStart(ctx, query)
+	ctx, span := h.queryTracerStart(ctx, "exec", query)
 	defer span.End()
 
 	if _, err := h.DB.ExecContext(ctx, query, args...); err != nil {
@@ -256,16 +260,18 @@ func (h *Helper) Exec(ctx context.Context, query string, args ...any) error {
 		return err
 	}
 
+	span.SetStatus(codes.Ok, "")
+
 	return nil
 }
 
 type Tx struct {
 	Tx               *sqlx.Tx
-	queryTracerStart func(context.Context, string, ...trace.SpanStartOption) (context.Context, trace.Span)
+	queryTracerStart func(context.Context, string, string, ...trace.SpanStartOption) (context.Context, trace.Span)
 }
 
 func (t *Tx) Select(ctx context.Context, dest any, query string, args ...any) error {
-	ctx, span := t.queryTracerStart(ctx, query)
+	ctx, span := t.queryTracerStart(ctx, "select", query)
 	defer span.End()
 
 	if err := t.Tx.SelectContext(ctx, dest, query, args...); err != nil {
@@ -274,11 +280,13 @@ func (t *Tx) Select(ctx context.Context, dest any, query string, args ...any) er
 		return err
 	}
 
+	span.SetStatus(codes.Ok, "")
+
 	return nil
 }
 
 func (t *Tx) Get(ctx context.Context, dest any, query string, args ...any) error {
-	ctx, span := t.queryTracerStart(ctx, query)
+	ctx, span := t.queryTracerStart(ctx, "get", query)
 	defer span.End()
 
 	if err := t.Tx.GetContext(ctx, dest, query, args...); err != nil {
@@ -287,11 +295,13 @@ func (t *Tx) Get(ctx context.Context, dest any, query string, args ...any) error
 		return err
 	}
 
+	span.SetStatus(codes.Ok, "")
+
 	return nil
 }
 
 func (t *Tx) Exec(ctx context.Context, query string, args ...any) error {
-	ctx, span := t.queryTracerStart(ctx, query)
+	ctx, span := t.queryTracerStart(ctx, "exec", query)
 	defer span.End()
 
 	if _, err := t.Tx.ExecContext(ctx, query, args...); err != nil {
@@ -300,12 +310,14 @@ func (t *Tx) Exec(ctx context.Context, query string, args ...any) error {
 		return err
 	}
 
+	span.SetStatus(codes.Ok, "")
+
 	return nil
 }
 
 var ErrNoRows = sql.ErrNoRows
 
-func (h *Helper) queryTracerStart(ctx context.Context, query string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
+func (h *Helper) queryTracerStart(ctx context.Context, operation, query string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	allOpts := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(h.attributes...),
@@ -314,7 +326,7 @@ func (h *Helper) queryTracerStart(ctx context.Context, query string, opts ...tra
 		),
 	}
 	allOpts = append(allOpts, opts...)
-	return h.tracer.Start(ctx, "query", allOpts...)
+	return h.tracer.Start(ctx, operation, allOpts...)
 }
 
 // normalizeQuery by removing excessive whitespace and truncating long queries.
