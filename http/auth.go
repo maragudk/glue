@@ -9,6 +9,8 @@ import (
 	"slices"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	g "maragu.dev/gomponents"
 
 	"maragu.dev/glue/html"
@@ -90,6 +92,11 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 				return
 			}
 
+			// Add user ID to the root span
+			if rootSpan := GetRootSpanFromContext(ctx); rootSpan != nil && rootSpan.IsRecording() {
+				rootSpan.SetAttributes(semconv.EnduserPseudoID(string(userID)))
+			}
+
 			// Store the user directly in the request context instead of having to use the session manager
 			ctx = context.WithValue(ctx, contextUserIDKey, &userID)
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -128,6 +135,15 @@ func Authorize(log *slog.Logger, pg permissionsGetter, requiredPermissions ...mo
 				log.Info("Error getting permissions", "error", err, "userID", userID)
 				http.Error(w, "error getting permissions", http.StatusInternalServerError)
 				return
+			}
+
+			// Add permissions to the root span
+			if rootSpan := GetRootSpanFromContext(ctx); rootSpan != nil && rootSpan.IsRecording() {
+				permissionStrings := make([]string, len(permissions))
+				for _, p := range permissions {
+					permissionStrings = append(permissionStrings, string(p))
+				}
+				rootSpan.SetAttributes(attribute.StringSlice("enduser.permissions", permissionStrings))
 			}
 
 			hasRequiredPermissions := true

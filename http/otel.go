@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -10,13 +11,18 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+const contextRootSpanKey = ContextKey("rootSpan")
+
 func OpenTelemetry(next http.Handler) http.Handler {
 	return otelhttp.NewHandler(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			span := trace.SpanFromContext(r.Context())
+			ctx := context.WithValue(r.Context(), contextRootSpanKey, span)
+			r = r.WithContext(ctx)
+
 			next.ServeHTTP(w, r)
 
 			routePattern := chi.RouteContext(r.Context()).RoutePattern()
-			span := trace.SpanFromContext(r.Context())
 			span.SetName(r.Method + " " + routePattern)
 			span.SetAttributes(semconv.HTTPRoute(routePattern))
 
@@ -26,4 +32,13 @@ func OpenTelemetry(next http.Handler) http.Handler {
 		}),
 		"", // Setting the name here doesn't matter, it's done on the span above
 	)
+}
+
+// GetRootSpanFromContext stored by the OpenTelemetry middleware.
+func GetRootSpanFromContext(ctx context.Context) trace.Span {
+	span := ctx.Value(contextRootSpanKey)
+	if span == nil {
+		return nil
+	}
+	return span.(trace.Span)
 }
