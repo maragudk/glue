@@ -22,9 +22,13 @@ func (r *Router) Get(path string, cb func(props html.PageProps) (Node, error)) {
 	tracer := r.tracer
 
 	r.Mux.Get(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		ctx, span := tracer.Start(r.Context(), "handler")
-		defer span.End()
-		return cb(GetProps(w, r.WithContext(ctx)))
+		if tracer != nil {
+			ctx, span := tracer.Start(r.Context(), "handler")
+			defer span.End()
+			r = r.WithContext(ctx)
+		}
+
+		return cb(GetProps(w, r))
 	}))
 }
 
@@ -32,9 +36,13 @@ func (r *Router) Post(path string, cb func(props html.PageProps) (Node, error)) 
 	tracer := r.tracer
 
 	r.Mux.Post(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		ctx, span := tracer.Start(r.Context(), "handler")
-		defer span.End()
-		return cb(GetProps(w, r.WithContext(ctx)))
+		if tracer != nil {
+			ctx, span := tracer.Start(r.Context(), "handler")
+			defer span.End()
+			r = r.WithContext(ctx)
+		}
+
+		return cb(GetProps(w, r))
 	}))
 }
 
@@ -42,9 +50,13 @@ func (r *Router) Put(path string, cb func(props html.PageProps) (Node, error)) {
 	tracer := r.tracer
 
 	r.Mux.Put(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		ctx, span := tracer.Start(r.Context(), "handler")
-		defer span.End()
-		return cb(GetProps(w, r.WithContext(ctx)))
+		if tracer != nil {
+			ctx, span := tracer.Start(r.Context(), "handler")
+			defer span.End()
+			r = r.WithContext(ctx)
+		}
+
+		return cb(GetProps(w, r))
 	}))
 }
 
@@ -52,9 +64,13 @@ func (r *Router) Delete(path string, cb func(props html.PageProps) (Node, error)
 	tracer := r.tracer
 
 	r.Mux.Delete(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		ctx, span := tracer.Start(r.Context(), "handler")
-		defer span.End()
-		return cb(GetProps(w, r.WithContext(ctx)))
+		if tracer != nil {
+			ctx, span := tracer.Start(r.Context(), "handler")
+			defer span.End()
+			r = r.WithContext(ctx)
+		}
+
+		return cb(GetProps(w, r))
 	}))
 }
 
