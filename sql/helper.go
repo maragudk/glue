@@ -5,9 +5,15 @@ import (
 	"database/sql"
 	"log/slog"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
+	"go.opentelemetry.io/otel/trace"
 	"maragu.dev/errors"
 	"maragu.dev/goqite"
 )
@@ -15,6 +21,7 @@ import (
 type Helper struct {
 	DB                    *sqlx.DB
 	JobsQ, JobsQCPU       *goqite.Queue
+	attributes            []attribute.KeyValue
 	connectionMaxIdleTime time.Duration
 	connectionMaxLifetime time.Duration
 	jobQueueTimeout       time.Duration
@@ -22,6 +29,7 @@ type Helper struct {
 	maxIdleConnections    int
 	maxOpenConnections    int
 	path                  string
+	tracer                trace.Tracer
 	url                   string
 }
 
@@ -50,6 +58,7 @@ type JobQueueOptions struct {
 
 // NewHelper with the given options.
 // If no logger is provided, logs are discarded.
+// For documentation on OTel spans and attributes, see https://opentelemetry.io/docs/specs/semconv/database/database-spans/
 func NewHelper(opts NewHelperOptions) *Helper {
 	if opts.Log == nil {
 		opts.Log = slog.New(slog.DiscardHandler)
@@ -63,6 +72,7 @@ func NewHelper(opts NewHelperOptions) *Helper {
 		maxIdleConnections:    opts.Postgres.MaxIdleConnections,
 		maxOpenConnections:    opts.Postgres.MaxOpenConnections,
 		path:                  opts.SQLite.Path,
+		tracer:                otel.Tracer("maragu.dev/glue/sql"),
 		url:                   opts.Postgres.URL,
 	}
 }
@@ -90,6 +100,9 @@ func (h *Helper) Connect(ctx context.Context) error {
 		}
 
 		sqlFlavor = goqite.SQLFlavorSQLite
+		h.attributes = []attribute.KeyValue{
+			semconv.DBSystemNameSQLite,
+		}
 
 	case h.url != "":
 		scrubbedUrl := scrubURL(h.url)
@@ -113,6 +126,9 @@ func (h *Helper) Connect(ctx context.Context) error {
 		h.DB.SetConnMaxIdleTime(h.connectionMaxIdleTime)
 
 		sqlFlavor = goqite.SQLFlavorPostgreSQL
+		h.attributes = []attribute.KeyValue{
+			semconv.DBSystemNamePostgreSQL,
+		}
 
 	default:
 		panic("neither postgres url nor sqlite path given")
@@ -149,29 +165,45 @@ func scrubURL(connectionURL string) string {
 }
 
 // InTransaction runs callback in a transaction, and makes sure to handle rollbacks, commits etc.
-func (h *Helper) InTransaction(ctx context.Context, cb func(tx *Tx) error) (err error) {
+func (h *Helper) InTx(ctx context.Context, cb func(ctx context.Context, tx *Tx) error) (err error) {
+	ctx, span := h.tracer.Start(ctx, "tx",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(h.attributes...),
+	)
+	defer span.End()
+
 	tx, err := h.DB.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
-		return errors.Wrap(err, "error beginning transaction")
+		err = errors.Wrap(err, "error beginning transaction")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "tx begin failed")
+		return err
 	}
+
 	defer func() {
 		if rec := recover(); rec != nil {
 			err = rollback(tx, errors.Newf("panic: %v", rec))
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "tx callback failed")
 		}
 	}()
-	if err := cb(&Tx{Tx: tx}); err != nil {
-		return rollback(tx, err)
+
+	if err := cb(ctx, &Tx{Tx: tx, queryTracerStart: h.queryTracerStart}); err != nil {
+		err = rollback(tx, err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "tx callback failed")
+		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return errors.Wrap(err, "error committing transaction")
+		err = errors.Wrap(err, "error committing transaction")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "tx commit failed")
+		return err
 	}
 
-	return nil
-}
+	span.SetStatus(codes.Ok, "")
 
-// InTx is just an alias for [Helper.InTransaction].
-func (h *Helper) InTx(ctx context.Context, cb func(tx *Tx) error) error {
-	return h.InTransaction(ctx, cb)
+	return nil
 }
 
 // rollback a transaction, handling both the original error and any transaction rollback errors.
@@ -183,39 +215,116 @@ func rollback(tx *sqlx.Tx, err error) error {
 }
 
 func (h *Helper) Ping(ctx context.Context) error {
-	return h.InTransaction(ctx, func(tx *Tx) error {
+	return h.InTx(ctx, func(ctx context.Context, tx *Tx) error {
 		return tx.Exec(ctx, `select 1`)
 	})
 }
 
 func (h *Helper) Select(ctx context.Context, dest any, query string, args ...any) error {
-	return h.DB.SelectContext(ctx, dest, query, args...)
+	ctx, span := h.queryTracerStart(ctx, query)
+	defer span.End()
+
+	if err := h.DB.SelectContext(ctx, dest, query, args...); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query failed")
+		return err
+	}
+
+	return nil
 }
 
 func (h *Helper) Get(ctx context.Context, dest any, query string, args ...any) error {
-	return h.DB.GetContext(ctx, dest, query, args...)
+	ctx, span := h.queryTracerStart(ctx, query)
+	defer span.End()
+
+	if err := h.DB.GetContext(ctx, dest, query, args...); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query failed")
+		return err
+	}
+
+	return nil
 }
 
 func (h *Helper) Exec(ctx context.Context, query string, args ...any) error {
-	_, err := h.DB.ExecContext(ctx, query, args...)
-	return err
+	ctx, span := h.queryTracerStart(ctx, query)
+	defer span.End()
+
+	if _, err := h.DB.ExecContext(ctx, query, args...); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query failed")
+		return err
+	}
+
+	return nil
 }
 
 type Tx struct {
-	Tx *sqlx.Tx
+	Tx               *sqlx.Tx
+	queryTracerStart func(context.Context, string, ...trace.SpanStartOption) (context.Context, trace.Span)
 }
 
 func (t *Tx) Select(ctx context.Context, dest any, query string, args ...any) error {
-	return t.Tx.SelectContext(ctx, dest, query, args...)
+	ctx, span := t.queryTracerStart(ctx, query)
+	defer span.End()
+
+	if err := t.Tx.SelectContext(ctx, dest, query, args...); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query failed")
+		return err
+	}
+
+	return nil
 }
 
 func (t *Tx) Get(ctx context.Context, dest any, query string, args ...any) error {
-	return t.Tx.GetContext(ctx, dest, query, args...)
+	ctx, span := t.queryTracerStart(ctx, query)
+	defer span.End()
+
+	if err := t.Tx.GetContext(ctx, dest, query, args...); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query failed")
+		return err
+	}
+
+	return nil
 }
 
 func (t *Tx) Exec(ctx context.Context, query string, args ...any) error {
-	_, err := t.Tx.ExecContext(ctx, query, args...)
-	return err
+	ctx, span := t.queryTracerStart(ctx, query)
+	defer span.End()
+
+	if _, err := t.Tx.ExecContext(ctx, query, args...); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query failed")
+		return err
+	}
+
+	return nil
 }
 
 var ErrNoRows = sql.ErrNoRows
+
+func (h *Helper) queryTracerStart(ctx context.Context, query string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
+	allOpts := []trace.SpanStartOption{
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(h.attributes...),
+		trace.WithAttributes(
+			attribute.String("db.query.text", normalizeQuery(query)),
+		),
+	}
+	allOpts = append(allOpts, opts...)
+	return h.tracer.Start(ctx, "query", allOpts...)
+}
+
+// normalizeQuery by removing excessive whitespace and truncating long queries.
+func normalizeQuery(query string) string {
+	normalized := strings.Join(strings.Fields(query), " ")
+
+	const maxLength = 1000
+	if len(normalized) > maxLength {
+		return normalized[:maxLength] + "…"
+	}
+
+	return normalized
+}
