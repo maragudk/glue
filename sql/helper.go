@@ -166,7 +166,7 @@ func scrubURL(connectionURL string) string {
 
 // InTransaction runs callback in a transaction, and makes sure to handle rollbacks, commits etc.
 func (h *Helper) InTx(ctx context.Context, cb func(ctx context.Context, tx *Tx) error) (err error) {
-	ctx, span := h.tracer.Start(ctx, "tx",
+	ctx, span := h.tracer.Start(ctx, "sql.tx",
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(h.attributes...),
 	)
@@ -219,7 +219,7 @@ func (h *Helper) Ping(ctx context.Context) error {
 }
 
 func (h *Helper) Select(ctx context.Context, dest any, query string, args ...any) error {
-	ctx, span := h.queryTracerStart(ctx, "select", query)
+	ctx, span := h.queryTracerStart(ctx, "sql.select", query)
 	defer span.End()
 
 	if err := h.DB.SelectContext(ctx, dest, query, args...); err != nil {
@@ -232,7 +232,7 @@ func (h *Helper) Select(ctx context.Context, dest any, query string, args ...any
 }
 
 func (h *Helper) Get(ctx context.Context, dest any, query string, args ...any) error {
-	ctx, span := h.queryTracerStart(ctx, "get", query)
+	ctx, span := h.queryTracerStart(ctx, "sql.get", query)
 	defer span.End()
 
 	if err := h.DB.GetContext(ctx, dest, query, args...); err != nil {
@@ -245,7 +245,7 @@ func (h *Helper) Get(ctx context.Context, dest any, query string, args ...any) e
 }
 
 func (h *Helper) Exec(ctx context.Context, query string, args ...any) error {
-	ctx, span := h.queryTracerStart(ctx, "exec", query)
+	ctx, span := h.queryTracerStart(ctx, "sql.exec", query)
 	defer span.End()
 
 	if _, err := h.DB.ExecContext(ctx, query, args...); err != nil {
@@ -263,7 +263,7 @@ type Tx struct {
 }
 
 func (t *Tx) Select(ctx context.Context, dest any, query string, args ...any) error {
-	ctx, span := t.queryTracerStart(ctx, "select", query)
+	ctx, span := t.queryTracerStart(ctx, "sql.tx.select", query)
 	defer span.End()
 
 	if err := t.Tx.SelectContext(ctx, dest, query, args...); err != nil {
@@ -276,7 +276,7 @@ func (t *Tx) Select(ctx context.Context, dest any, query string, args ...any) er
 }
 
 func (t *Tx) Get(ctx context.Context, dest any, query string, args ...any) error {
-	ctx, span := t.queryTracerStart(ctx, "get", query)
+	ctx, span := t.queryTracerStart(ctx, "sql.tx.get", query)
 	defer span.End()
 
 	if err := t.Tx.GetContext(ctx, dest, query, args...); err != nil {
@@ -289,7 +289,7 @@ func (t *Tx) Get(ctx context.Context, dest any, query string, args ...any) error
 }
 
 func (t *Tx) Exec(ctx context.Context, query string, args ...any) error {
-	ctx, span := t.queryTracerStart(ctx, "exec", query)
+	ctx, span := t.queryTracerStart(ctx, "sql.tx.exec", query)
 	defer span.End()
 
 	if _, err := t.Tx.ExecContext(ctx, query, args...); err != nil {

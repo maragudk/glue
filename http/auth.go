@@ -49,7 +49,7 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx, span := tracer.Start(r.Context(), "Authenticate")
+			ctx, span := tracer.Start(r.Context(), "http.Authenticate")
 			defer span.End()
 			r = r.WithContext(ctx)
 
@@ -119,7 +119,7 @@ func Authorize(log *slog.Logger, pg permissionsGetter, requiredPermissions ...mo
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx, span := tracer.Start(r.Context(), "Authorize")
+			ctx, span := tracer.Start(r.Context(), "http.Authorize")
 			defer span.End()
 			r = r.WithContext(ctx)
 
@@ -173,7 +173,7 @@ func SavePermissionsInContext(log *slog.Logger, pg permissionsGetter) Middleware
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx, span := tracer.Start(r.Context(), "SavePermissionsInContext")
+			ctx, span := tracer.Start(r.Context(), "http.SavePermissionsInContext")
 			defer span.End()
 			r = r.WithContext(ctx)
 

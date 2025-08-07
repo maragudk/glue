@@ -53,7 +53,7 @@ func NewBucket(opts NewBucketOptions) *Bucket {
 
 // Put an object under key with the given contentType.
 func (b *Bucket) Put(ctx context.Context, key, contentType string, body io.ReadSeeker) error {
-	ctx, span := b.operationTracerStart(ctx, "PUT", key)
+	ctx, span := b.operationTracerStart(ctx, "s3.put", key)
 	defer span.End()
 
 	_, err := b.Client.PutObject(ctx, &s3.PutObjectInput{
@@ -74,7 +74,7 @@ func (b *Bucket) Put(ctx context.Context, key, contentType string, body io.ReadS
 // Get an object under key.
 // If there is nothing there, returns nil and no error.
 func (b *Bucket) Get(ctx context.Context, key string) (io.ReadCloser, error) {
-	ctx, span := b.operationTracerStart(ctx, "GET", key)
+	ctx, span := b.operationTracerStart(ctx, "s3.get", key)
 	defer span.End()
 
 	getObjectOutput, err := b.Client.GetObject(ctx, &s3.GetObjectInput{
@@ -97,7 +97,7 @@ func (b *Bucket) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 // Delete an object under key.
 // Deleting where nothing exists does nothing and returns no error.
 func (b *Bucket) Delete(ctx context.Context, key string) error {
-	ctx, span := b.operationTracerStart(ctx, "DELETE", key)
+	ctx, span := b.operationTracerStart(ctx, "s3.delete", key)
 	defer span.End()
 
 	_, err := b.Client.DeleteObject(ctx, &s3.DeleteObjectInput{
@@ -127,7 +127,7 @@ func (b *Bucket) GetPresignedURL(ctx context.Context, key string, expires time.D
 }
 
 func (b *Bucket) List(ctx context.Context, prefix string, maxKeys int) ([]string, error) {
-	ctx, span := b.operationTracerStart(ctx, "LIST", prefix)
+	ctx, span := b.operationTracerStart(ctx, "s3.list", prefix)
 	defer span.End()
 
 	listObjectsOutput, err := b.Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
