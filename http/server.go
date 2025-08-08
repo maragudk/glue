@@ -59,8 +59,6 @@ func NewServer(opts NewServerOptions) *Server {
 		opts.WriteTimeout = 10 * time.Second
 	}
 
-	mux := chi.NewRouter()
-
 	sm := scs.New()
 	if opts.SessionStore != nil {
 		sm.Store = opts.SessionStore
@@ -71,6 +69,8 @@ func NewServer(opts NewServerOptions) *Server {
 
 	tracer := otel.Tracer("maragu.dev/glue/http")
 
+	mux := &TracingMux{mux: chi.NewRouter(), tracer: tracer}
+
 	return &Server{
 		baseURL:            opts.BaseURL,
 		csp:                opts.CSP,
@@ -78,7 +78,7 @@ func NewServer(opts NewServerOptions) *Server {
 		httpRouterInjector: opts.HTTPRouterInjector,
 		log:                opts.Log,
 		permissionsGetter:  opts.PermissionsGetter,
-		r:                  &Router{Mux: mux, SM: sm, tracer: tracer},
+		r:                  &Router{Mux: mux, SM: sm},
 		server: &http.Server{
 			Addr:         opts.Address,
 			ErrorLog:     slog.NewLogLogger(opts.Log.Handler(), slog.LevelError),
