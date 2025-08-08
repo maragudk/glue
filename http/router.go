@@ -17,6 +17,21 @@ type Router struct {
 	SM  *scs.SessionManager
 }
 
+type NewRouterOpts struct {
+	Mux chi.Router
+	SM  *scs.SessionManager
+}
+
+func NewRouter(opts NewRouterOpts) *Router {
+	if opts.Mux == nil {
+		opts.Mux = chi.NewMux()
+	}
+	return &Router{
+		Mux: opts.Mux,
+		SM:  opts.SM,
+	}
+}
+
 func (r *Router) Get(path string, cb func(props html.PageProps) (Node, error)) {
 	r.Mux.Get(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
 		return cb(GetProps(w, r))
