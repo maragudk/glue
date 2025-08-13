@@ -13,6 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
+	"go.opentelemetry.io/otel/trace"
 	"maragu.dev/errors"
 
 	"maragu.dev/glue/email"
@@ -46,6 +51,7 @@ type Sender struct {
 	log               *slog.Logger
 	marketingFrom     nameAndEmail
 	replyTo           nameAndEmail
+	tracer            trace.Tracer
 	transactionalFrom nameAndEmail
 }
 
@@ -83,6 +89,7 @@ func NewSender(opts NewSenderOptions) *Sender {
 		log:               opts.Log,
 		marketingFrom:     createNameAndEmail(opts.MarketingEmailName, opts.MarketingEmailAddress),
 		replyTo:           createNameAndEmail(opts.ReplyToEmailName, opts.ReplyToEmailAddress),
+		tracer:            otel.Tracer("maragu.dev/glue/email/postmark"),
 		transactionalFrom: createNameAndEmail(opts.TransactionalEmailName, opts.TransactionalEmailAddress),
 	}
 }
@@ -104,6 +111,22 @@ type requestBody struct {
 }
 
 func (s *Sender) send(ctx context.Context, typ emailType, name string, email model.EmailAddress, subject, preheader, template string, keywords model.Keywords) error {
+	var emailTypeStr string
+	switch typ {
+	case marketing:
+		emailTypeStr = "marketing"
+	case transactional:
+		emailTypeStr = "transactional"
+	}
+
+	ctx, span := s.operationTracerStart(ctx, "postmark.send", email.String(),
+		trace.WithAttributes(
+			attribute.String("email.type", emailTypeStr),
+			attribute.String("email.template", template),
+		),
+	)
+	defer span.End()
+
 	var messageStream string
 	var from nameAndEmail
 	switch typ {
@@ -128,8 +151,13 @@ func (s *Sender) send(ctx context.Context, typ emailType, name string, email mod
 		Subject:       subject,
 		HtmlBody:      getEmail(s.emails, template, preheader, keywords),
 	})
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "send failed")
+		return err
+	}
 
-	return err
+	return nil
 }
 
 type postmarkResponse struct {
@@ -139,13 +167,28 @@ type postmarkResponse struct {
 
 // send using the Postmark API.
 func (s *Sender) sendRequest(ctx context.Context, body requestBody) error {
+	ctx, span := s.operationTracerStart(ctx, "postmark.sendRequest", body.To,
+		trace.WithAttributes(
+			attribute.String("postmark.message_stream", body.MessageStream),
+			semconv.HTTPRequestMethodPost,
+			semconv.URLFull(s.endpointURL),
+		),
+	)
+	defer span.End()
+
 	bodyAsBytes, err := json.Marshal(body)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "marshal failed")
 		return errors.Wrap(err, "error marshalling request body to json")
 	}
 
+	span.SetAttributes(semconv.HTTPRequestBodySize(len(bodyAsBytes)))
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.endpointURL, bytes.NewReader(bodyAsBytes))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "request creation failed")
 		return errors.Wrap(err, "error creating request")
 	}
 
@@ -155,6 +198,8 @@ func (s *Sender) sendRequest(ctx context.Context, body requestBody) error {
 
 	res, err := s.client.Do(req)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "request failed")
 		return errors.Wrap(err, "error making request")
 	}
 	defer func() {
@@ -162,30 +207,48 @@ func (s *Sender) sendRequest(ctx context.Context, body requestBody) error {
 	}()
 	bodyAsBytes, err = io.ReadAll(res.Body)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "read response failed")
 		return errors.Wrap(err, "error reading response body")
 	}
+
+	span.SetAttributes(
+		semconv.HTTPResponseStatusCode(res.StatusCode),
+		semconv.HTTPResponseBodySize(len(bodyAsBytes)),
+	)
 
 	// https://postmarkapp.com/developer/api/overview#response-codes
 	if res.StatusCode == http.StatusUnprocessableEntity {
 		var r postmarkResponse
 		if err := json.Unmarshal(bodyAsBytes, &r); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "unmarshal error response failed")
 			return errors.Wrap(err, "error unwrapping postmark error response body")
 		}
+
+		span.SetAttributes(attribute.Int("postmark.error_code", r.ErrorCode))
 
 		// https://postmarkapp.com/developer/api/overview#error-codes
 		switch r.ErrorCode {
 		case 406:
 			s.log.Info("Not sending email, recipient is inactive", "recipient", body.To)
+			span.SetStatus(codes.Ok, "recipient inactive, email not sent")
 			return nil
 		default:
 			s.log.Error("Error sending email, got error code", "error code", r.ErrorCode, "message", r.Message)
-			return errors.Newf("error sending email, got error code %v", r.ErrorCode)
+			err := errors.Newf("error sending email, got error code %v", r.ErrorCode)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "postmark error")
+			return err
 		}
 	}
 
 	if res.StatusCode >= 300 {
 		s.log.Info("Error sending email, got http status code", "status code", res.StatusCode, "body", string(bodyAsBytes))
-		return errors.Newf("error sending email, got http status code %v", res.StatusCode)
+		err := errors.Newf("error sending email, got http status code %v", res.StatusCode)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "http error")
+		return err
 	}
 
 	return nil
@@ -225,6 +288,17 @@ func getEmail(emails fs.FS, path, preheader string, keywords model.Keywords) str
 	}
 
 	return email
+}
+
+func (s *Sender) operationTracerStart(ctx context.Context, operation, recipient string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
+	allOpts := []trace.SpanStartOption{
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("email.recipient", recipient),
+		),
+	}
+	allOpts = append(allOpts, opts...)
+	return s.tracer.Start(ctx, operation, allOpts...)
 }
 
 var _ email.Sender = (*Sender)(nil)
