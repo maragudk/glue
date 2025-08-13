@@ -15,6 +15,7 @@ require (
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/justincampbell/timeago v0.0.0-20160528003754-027f40306f1d
 	github.com/mattn/go-sqlite3 v1.14.30
+	github.com/mileusna/useragent v1.3.5
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.62.0
 	go.opentelemetry.io/otel v1.37.0
 	go.opentelemetry.io/otel/trace v1.37.0
