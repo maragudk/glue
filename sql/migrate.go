@@ -31,7 +31,7 @@ func (h *Helper) getMigrations() fs.FS {
 	migrationsOnce.Do(func() {
 		migrationsDirs := []fs.FS{migrations}
 
-		for _, path := range []string{"postgres/migrations", "../postgres/migrations"} {
+		for _, path := range []string{"postgres/migrations", "../postgres/migrations", "sqlite/migrations", "../sqlite/migrations"} {
 			ms := os.DirFS(path)
 			matches, err := fs.Glob(ms, "*.sql")
 			if err == nil && len(matches) > 0 {
