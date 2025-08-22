@@ -1,13 +1,14 @@
 package sqlitetest
 
 import (
+	"crypto/rand"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
-	"maragu.dev/env"
 
 	"maragu.dev/glue/sql"
 )
@@ -16,17 +17,16 @@ import (
 func NewHelper(t *testing.T) *sql.Helper {
 	t.Helper()
 
-	_ = env.Load("../.env.test")
+	databaseName := "test-" + strings.ToLower(rand.Text()) + ".db"
 
-	cleanup(t)
 	t.Cleanup(func() {
-		cleanup(t)
+		cleanup(t, databaseName)
 	})
 
 	h := sql.NewHelper(sql.NewHelperOptions{
 		Log: slog.New(slog.NewTextHandler(&testWriter{t: t}, nil)),
 		SQLite: sql.SQLiteOptions{
-			Path: env.GetStringOrDefault("DATABASE_PATH", "test.db"),
+			Path: databaseName,
 		},
 	})
 	if err := h.Connect(t.Context()); err != nil {
@@ -40,10 +40,10 @@ func NewHelper(t *testing.T) *sql.Helper {
 	return h
 }
 
-func cleanup(t *testing.T) {
+func cleanup(t *testing.T, databaseName string) {
 	t.Helper()
 
-	files, err := filepath.Glob("test.db*")
+	files, err := filepath.Glob(databaseName + "*")
 	if err != nil {
 		t.Fatal(err)
 	}
