@@ -30,7 +30,7 @@ func (p PageProps) HasPermission(perm model.Permission) bool {
 type PageFunc = func(props PageProps, children ...Node) Node
 
 func FavIcons(name string) Node {
-	return Group([]Node{
+	return Group{
 		// <link rel="icon" type="image/png" href="/favicon-96x96.png" sizes="96x96" />
 		Link(Rel("icon"), Type("image/png"), Href("/favicon-96x96.png"), Attr("sizes", "96x96")),
 
@@ -48,7 +48,7 @@ func FavIcons(name string) Node {
 
 		// <link rel="manifest" href="/manifest.json" />
 		Link(Rel("manifest"), Href("/manifest.json")),
-	})
+	}
 }
 
 func Container(padX, padY bool, children ...Node) Node {
