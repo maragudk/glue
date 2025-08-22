@@ -94,7 +94,7 @@ func NewServer(opts NewServerOptions) *Server {
 
 // Start the server by setting up routes and listening on the supplied address.
 func (s *Server) Start() error {
-	s.log.Info("Starting server", "address", s.baseURL)
+	s.log.Info("Starting server", "address", s.baseURL, "idleTimeout", s.server.IdleTimeout, "readTimeout", s.server.ReadTimeout, "writeTimeout", s.server.WriteTimeout)
 
 	s.setupRoutes()
 

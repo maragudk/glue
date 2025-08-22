@@ -25,7 +25,6 @@ func NewBucket(t *testing.T) *s3.Bucket {
 	}
 
 	_ = env.Load("../.env.test")
-	_ = env.Load("../../.env.test")
 
 	bucketName := strings.ToLower(rand.Text())
 

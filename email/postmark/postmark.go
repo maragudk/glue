@@ -119,7 +119,7 @@ func (s *Sender) send(ctx context.Context, typ emailType, name string, email mod
 		emailTypeStr = "transactional"
 	}
 
-	ctx, span := s.operationTracerStart(ctx, "postmark.send", email.String(),
+	ctx, span := s.operationTracerStart(ctx, "postmark.send",
 		trace.WithAttributes(
 			attribute.String("email.type", emailTypeStr),
 			attribute.String("email.template", template),
@@ -167,7 +167,7 @@ type postmarkResponse struct {
 
 // send using the Postmark API.
 func (s *Sender) sendRequest(ctx context.Context, body requestBody) error {
-	ctx, span := s.operationTracerStart(ctx, "postmark.sendRequest", body.To,
+	ctx, span := s.operationTracerStart(ctx, "postmark.sendRequest",
 		trace.WithAttributes(
 			attribute.String("postmark.message_stream", body.MessageStream),
 			semconv.HTTPRequestMethodPost,
@@ -290,12 +290,9 @@ func getEmail(emails fs.FS, path, preheader string, keywords model.Keywords) str
 	return email
 }
 
-func (s *Sender) operationTracerStart(ctx context.Context, operation, recipient string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
+func (s *Sender) operationTracerStart(ctx context.Context, operation string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	allOpts := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(
-			attribute.String("email.recipient", recipient),
-		),
 	}
 	allOpts = append(allOpts, opts...)
 	return s.tracer.Start(ctx, operation, allOpts...)
