@@ -67,3 +67,23 @@ func TestHelper_WithFixtures(t *testing.T) {
 		is.Equal(t, version, "1")
 	})
 }
+
+func TestHelper_WithSkipMigrations(t *testing.T) {
+	t.Run("should skip migrations and not have schema tables", func(t *testing.T) {
+		h := sqlitetest.NewHelper(t, sqlitetest.WithSkipMigrations())
+
+		var count int
+		err := h.Get(t.Context(), &count, `select count(*) from sqlite_master where type='table' and name='glue'`)
+		is.NotError(t, err)
+		is.Equal(t, count, 0)
+	})
+
+	t.Run("should work with fixtures when migrations are skipped", func(t *testing.T) {
+		h := sqlitetest.NewHelper(t, sqlitetest.WithSkipMigrations(), sqlitetest.WithFixtures("users"))
+
+		var count int
+		err := h.Get(t.Context(), &count, `select count(*) from users`)
+		is.NotError(t, err)
+		is.Equal(t, count, 2)
+	})
+}
