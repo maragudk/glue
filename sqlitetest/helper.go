@@ -13,9 +13,16 @@ import (
 	"maragu.dev/glue/sql"
 )
 
-// NewHelper for testing.
-func NewHelper(t *testing.T) *sql.Helper {
+// NewHelper for testing, with optional options.
+// Options:
+// - [WithFixtures] to load fixtures after migration.
+func NewHelper(t *testing.T, opts ...HelperOption) *sql.Helper {
 	t.Helper()
+
+	var config helperConfig
+	for _, opt := range opts {
+		opt(&config)
+	}
 
 	databaseName := "test-" + strings.ToLower(rand.Text()) + ".db"
 
@@ -35,6 +42,10 @@ func NewHelper(t *testing.T) *sql.Helper {
 
 	if err := h.MigrateUp(t.Context()); err != nil {
 		t.Fatal(err)
+	}
+
+	if len(config.fixtures) > 0 {
+		loadFixtures(t, h, config.fixtures)
 	}
 
 	return h
