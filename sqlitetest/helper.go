@@ -16,6 +16,7 @@ import (
 // NewHelper for testing, with optional options.
 // Options:
 // - [WithFixtures] to load fixtures after migration.
+// - [WithSkipMigrations] to skip running database migrations.
 func NewHelper(t *testing.T, opts ...HelperOption) *sql.Helper {
 	t.Helper()
 
@@ -40,8 +41,10 @@ func NewHelper(t *testing.T, opts ...HelperOption) *sql.Helper {
 		t.Fatal(err)
 	}
 
-	if err := h.MigrateUp(t.Context()); err != nil {
-		t.Fatal(err)
+	if !config.skipMigrations {
+		if err := h.MigrateUp(t.Context()); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	if len(config.fixtures) > 0 {

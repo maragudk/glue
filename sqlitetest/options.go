@@ -13,7 +13,8 @@ type HelperOption func(*helperConfig)
 
 // helperConfig used with [HelperOption].
 type helperConfig struct {
-	fixtures []string
+	fixtures       []string
+	skipMigrations bool
 }
 
 // WithFixtures adds SQL fixtures to be run after migrations.
@@ -23,6 +24,13 @@ type helperConfig struct {
 func WithFixtures(fixtures ...string) HelperOption {
 	return func(c *helperConfig) {
 		c.fixtures = append(c.fixtures, fixtures...)
+	}
+}
+
+// WithSkipMigrations skips running database migrations.
+func WithSkipMigrations() HelperOption {
+	return func(c *helperConfig) {
+		c.skipMigrations = true
 	}
 }
 
