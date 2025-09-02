@@ -1,6 +1,7 @@
 package sqlitetest_test
 
 import (
+	"context"
 	"testing"
 
 	"maragu.dev/is"
@@ -68,22 +69,28 @@ func TestHelper_WithFixtures(t *testing.T) {
 	})
 }
 
-func TestHelper_WithSkipMigrations(t *testing.T) {
-	t.Run("should skip migrations and not have schema tables", func(t *testing.T) {
-		h := sqlitetest.NewHelper(t, sqlitetest.WithSkipMigrations())
+func TestHelper_WithMigrationFunc(t *testing.T) {
+	t.Run("should run custom migration function instead of built-in migrations", func(t *testing.T) {
+		migrationRan := false
+		customMigration := func(ctx context.Context) error {
+			migrationRan = true
+			return nil
+		}
 
+		h := sqlitetest.NewHelper(t, sqlitetest.WithMigrationFunc(customMigration))
+
+		is.True(t, migrationRan)
+
+		// Should not have the default glue table since we used custom migration
 		var count int
 		err := h.Get(t.Context(), &count, `select count(*) from sqlite_master where type='table' and name='glue'`)
 		is.NotError(t, err)
 		is.Equal(t, count, 0)
-	})
 
-	t.Run("should work with fixtures when migrations are skipped", func(t *testing.T) {
-		h := sqlitetest.NewHelper(t, sqlitetest.WithSkipMigrations(), sqlitetest.WithFixtures("users"))
-
-		var count int
-		err := h.Get(t.Context(), &count, `select count(*) from users`)
+		// Verify the helper is functional even with custom migration
+		var result string
+		err = h.Get(t.Context(), &result, `select 'test' as value`)
 		is.NotError(t, err)
-		is.Equal(t, count, 2)
+		is.Equal(t, result, "test")
 	})
 }
