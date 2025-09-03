@@ -19,10 +19,10 @@ import (
 // Options:
 // - [WithFixtures] to load fixtures after migration.
 // - [WithMigrationFunc] to use a custom migration function instead of the built-in one.
-func NewHelper(t *testing.T, opts ...HelperOption) *sql.Helper {
+func NewHelper(t *testing.T, opts ...NewHelperOption) *sql.Helper {
 	t.Helper()
 
-	var config helperConfig
+	var config newHelperConfig
 	for _, opt := range opts {
 		opt(&config)
 	}

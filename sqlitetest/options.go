@@ -10,11 +10,11 @@ import (
 	"maragu.dev/glue/sql"
 )
 
-// HelperOption for [NewHelper].
-type HelperOption func(*helperConfig)
+// NewHelperOption for [NewHelper].
+type NewHelperOption func(*newHelperConfig)
 
-// helperConfig used with [HelperOption].
-type helperConfig struct {
+// newHelperConfig used with [NewHelperOption].
+type newHelperConfig struct {
 	fixtures      []string
 	migrationFunc func(context.Context, *stdsql.DB) error
 }
@@ -23,15 +23,15 @@ type helperConfig struct {
 // They are applied in the order given.
 // Fixture names should not include the .sql extension.
 // Fixtures are loaded from sqlite/testdata/fixtures/ directory from the project root.
-func WithFixtures(fixtures ...string) HelperOption {
-	return func(c *helperConfig) {
+func WithFixtures(fixtures ...string) NewHelperOption {
+	return func(c *newHelperConfig) {
 		c.fixtures = append(c.fixtures, fixtures...)
 	}
 }
 
 // WithMigrationFunc sets a custom migration function to run instead of the built-in one.
-func WithMigrationFunc(fn func(context.Context, *stdsql.DB) error) HelperOption {
-	return func(c *helperConfig) {
+func WithMigrationFunc(fn func(context.Context, *stdsql.DB) error) NewHelperOption {
+	return func(c *newHelperConfig) {
 		c.migrationFunc = fn
 	}
 }
