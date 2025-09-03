@@ -1,7 +1,9 @@
 package sqlitetest
 
 import (
+	"context"
 	"crypto/rand"
+	stdsql "database/sql"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -42,10 +44,12 @@ func NewHelper(t *testing.T, opts ...HelperOption) *sql.Helper {
 	}
 
 	if config.migrationFunc == nil {
-		config.migrationFunc = h.MigrateUp
+		config.migrationFunc = func(ctx context.Context, _ *stdsql.DB) error {
+			return h.MigrateUp(ctx)
+		}
 	}
 
-	if err := config.migrationFunc(t.Context()); err != nil {
+	if err := config.migrationFunc(t.Context(), h.DB.DB); err != nil {
 		t.Fatal(err)
 	}
 

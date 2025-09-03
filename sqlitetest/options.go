@@ -2,6 +2,7 @@ package sqlitetest
 
 import (
 	"context"
+	stdsql "database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,7 +16,7 @@ type HelperOption func(*helperConfig)
 // helperConfig used with [HelperOption].
 type helperConfig struct {
 	fixtures      []string
-	migrationFunc func(context.Context) error
+	migrationFunc func(context.Context, *stdsql.DB) error
 }
 
 // WithFixtures adds SQL fixtures to be run after migrations.
@@ -29,7 +30,7 @@ func WithFixtures(fixtures ...string) HelperOption {
 }
 
 // WithMigrationFunc sets a custom migration function to run instead of the built-in one.
-func WithMigrationFunc(fn func(context.Context) error) HelperOption {
+func WithMigrationFunc(fn func(context.Context, *stdsql.DB) error) HelperOption {
 	return func(c *helperConfig) {
 		c.migrationFunc = fn
 	}
