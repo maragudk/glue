@@ -2,6 +2,7 @@ package sqlitetest_test
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"maragu.dev/is"
@@ -72,7 +73,7 @@ func TestHelper_WithFixtures(t *testing.T) {
 func TestHelper_WithMigrationFunc(t *testing.T) {
 	t.Run("should run custom migration function instead of built-in migrations", func(t *testing.T) {
 		migrationRan := false
-		customMigration := func(ctx context.Context) error {
+		customMigration := func(ctx context.Context, db *sql.DB) error {
 			migrationRan = true
 			return nil
 		}

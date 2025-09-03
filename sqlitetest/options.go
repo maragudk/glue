@@ -2,11 +2,12 @@ package sqlitetest
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"maragu.dev/glue/sql"
+	gluesql "maragu.dev/glue/sql"
 )
 
 // HelperOption for [NewHelper].
@@ -15,7 +16,7 @@ type HelperOption func(*helperConfig)
 // helperConfig used with [HelperOption].
 type helperConfig struct {
 	fixtures      []string
-	migrationFunc func(context.Context) error
+	migrationFunc func(context.Context, *sql.DB) error
 }
 
 // WithFixtures adds SQL fixtures to be run after migrations.
@@ -29,13 +30,13 @@ func WithFixtures(fixtures ...string) HelperOption {
 }
 
 // WithMigrationFunc sets a custom migration function to run instead of the built-in one.
-func WithMigrationFunc(fn func(context.Context) error) HelperOption {
+func WithMigrationFunc(fn func(context.Context, *sql.DB) error) HelperOption {
 	return func(c *helperConfig) {
 		c.migrationFunc = fn
 	}
 }
 
-func loadFixtures(t *testing.T, h *sql.Helper, fixtures []string) {
+func loadFixtures(t *testing.T, h *gluesql.Helper, fixtures []string) {
 	t.Helper()
 
 	// Try different relative paths for fixtures
