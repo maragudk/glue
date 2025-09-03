@@ -44,20 +44,20 @@ func TestWithTracing(t *testing.T) {
 			Value:   42,
 		}
 
-		m, err := json.Marshal(payload)
+		body, err := json.Marshal(payload)
 		is.NotError(t, err)
 
 		type testTracedMessage struct {
-			Payload      json.RawMessage
+			Body         json.RawMessage
 			TraceContext map[string]string
 		}
 
 		tracedPayload := testTracedMessage{
-			Payload:      json.RawMessage(m),
+			Body:         json.RawMessage(body),
 			TraceContext: carrier,
 		}
 
-		tracedM, err := json.Marshal(tracedPayload)
+		tracedBody, err := json.Marshal(tracedPayload)
 		is.NotError(t, err)
 
 		// Create a traced function handler
@@ -70,7 +70,7 @@ func TestWithTracing(t *testing.T) {
 		})
 
 		// Execute the handler
-		err = handler(t.Context(), tracedM)
+		err = handler(t.Context(), tracedBody)
 		is.NotError(t, err)
 
 		// Verify payload was extracted correctly (should be the original payload bytes)
@@ -93,7 +93,7 @@ func TestWithTracing(t *testing.T) {
 			Value:   123,
 		}
 
-		m, err := json.Marshal(payload)
+		body, err := json.Marshal(payload)
 		is.NotError(t, err)
 
 		// Create a traced function handler
@@ -106,7 +106,7 @@ func TestWithTracing(t *testing.T) {
 		})
 
 		// Execute the handler
-		err = handler(t.Context(), m)
+		err = handler(t.Context(), body)
 		is.NotError(t, err)
 
 		// Verify payload was passed through correctly

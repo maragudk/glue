@@ -51,11 +51,11 @@ func wrapWithTrace(ctx context.Context, m Message) Message {
 
 	// Wrap payload with trace context
 	tracedM := tracedMessage{
-		Payload:      json.RawMessage(m.Body),
+		Body:         json.RawMessage(m.Body),
 		TraceContext: carrier,
 	}
 
-	tracedMBytes, err := json.Marshal(tracedM)
+	body, err := json.Marshal(tracedM)
 	if err != nil {
 		panic(err)
 	}
@@ -63,7 +63,7 @@ func wrapWithTrace(ctx context.Context, m Message) Message {
 	// Create message with traced payload, copying other options
 	return Message{
 		ID:       m.ID,
-		Body:     tracedMBytes,
+		Body:     body,
 		Delay:    m.Delay,
 		Priority: m.Priority,
 	}
@@ -74,7 +74,7 @@ type Message = goqite.Message
 // tracedMessage wraps any job payload with OpenTelemetry trace context
 // for propagating traces from HTTP requests to background jobs.
 type tracedMessage struct {
-	Payload      json.RawMessage
+	Body         json.RawMessage
 	TraceContext map[string]string
 }
 
@@ -87,13 +87,13 @@ func WithTracing(operationName string, fn Func) Func {
 	return func(ctx context.Context, m []byte) error {
 		// Try to unmarshal as tracedMessage first to extract trace context
 		var tracedM tracedMessage
-		if err := json.Unmarshal(m, &tracedM); err == nil && len(tracedM.Payload) > 0 && len(tracedM.TraceContext) > 0 {
+		if err := json.Unmarshal(m, &tracedM); err == nil && len(tracedM.Body) > 0 && len(tracedM.TraceContext) > 0 {
 			// Extract trace context
 			propagator := otel.GetTextMapPropagator()
 			ctx = propagator.Extract(ctx, propagation.MapCarrier(tracedM.TraceContext))
 
 			// Use the wrapped payload
-			m = tracedM.Payload
+			m = tracedM.Body
 		}
 
 		ctx, span := tracer.Start(ctx, operationName,
