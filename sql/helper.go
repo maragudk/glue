@@ -236,8 +236,10 @@ func (h *Helper) Get(ctx context.Context, dest any, query string, args ...any) e
 	defer span.End()
 
 	if err := h.DB.GetContext(ctx, dest, query, args...); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "query failed")
+		if !errors.Is(err, sql.ErrNoRows) {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "query failed")
+		}
 		return err
 	}
 
@@ -280,8 +282,10 @@ func (t *Tx) Get(ctx context.Context, dest any, query string, args ...any) error
 	defer span.End()
 
 	if err := t.Tx.GetContext(ctx, dest, query, args...); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "query failed")
+		if !errors.Is(err, sql.ErrNoRows) {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "query failed")
+		}
 		return err
 	}
 
