@@ -3,7 +3,7 @@ package sqlitetest
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
+	stdsql "database/sql"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,14 +12,14 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	gluesql "maragu.dev/glue/sql"
+	"maragu.dev/glue/sql"
 )
 
 // NewHelper for testing, with optional options.
 // Options:
 // - [WithFixtures] to load fixtures after migration.
 // - [WithMigrationFunc] to use a custom migration function instead of the built-in one.
-func NewHelper(t *testing.T, opts ...HelperOption) *gluesql.Helper {
+func NewHelper(t *testing.T, opts ...HelperOption) *sql.Helper {
 	t.Helper()
 
 	var config helperConfig
@@ -33,9 +33,9 @@ func NewHelper(t *testing.T, opts ...HelperOption) *gluesql.Helper {
 		cleanup(t, databaseName)
 	})
 
-	h := gluesql.NewHelper(gluesql.NewHelperOptions{
+	h := sql.NewHelper(sql.NewHelperOptions{
 		Log: slog.New(slog.NewTextHandler(&testWriter{t: t}, nil)),
-		SQLite: gluesql.SQLiteOptions{
+		SQLite: sql.SQLiteOptions{
 			Path: databaseName,
 		},
 	})
@@ -44,7 +44,7 @@ func NewHelper(t *testing.T, opts ...HelperOption) *gluesql.Helper {
 	}
 
 	if config.migrationFunc == nil {
-		config.migrationFunc = func(ctx context.Context, _ *sql.DB) error {
+		config.migrationFunc = func(ctx context.Context, _ *stdsql.DB) error {
 			return h.MigrateUp(ctx)
 		}
 	}
