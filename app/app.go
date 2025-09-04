@@ -22,6 +22,10 @@ type StartFunc = func(ctx context.Context, log *slog.Logger, eg *errgroup.Group)
 // Start sets up the main application context, the [slog.Logger], an [errgroup.Group], and Open Telemetry tracing, and calls the given callback.
 // The callback function should start up all necessary components of the app using the error group, and not block on anything itself in the main goroutine.
 func Start(startCallback StartFunc) {
+	// Catch SIGTERM and SIGINT from the terminal, so we can do clean shutdowns.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
 	// This loads from .env in development and /run/secrets/env when run in a container through Docker compose.
 	// We ignore errors because neither may exist.
 	_ = env.Load(".env")
@@ -41,7 +45,7 @@ func Start(startCallback StartFunc) {
 
 	// We call the callback so it can return errors and we can handle it just here.
 	// Also makes it easier to test starting the app if needed, because tests don't handle os.Exit well.
-	if err := start(log, name, startCallback); err != nil {
+	if err := start(ctx, log, name, startCallback); err != nil {
 		log.Error("Error starting app", "name", name, "error", err)
 		os.Exit(1)
 	}
@@ -49,11 +53,7 @@ func Start(startCallback StartFunc) {
 	log.Info("Stopped app", "name", name)
 }
 
-func start(log *slog.Logger, name string, startCallback StartFunc) error {
-	// Catch SIGTERM and SIGINT from the terminal, so we can do clean shutdowns.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
-
+func start(ctx context.Context, log *slog.Logger, name string, startCallback StartFunc) error {
 	otelShutdown, err := otelconfig.ConfigureOpenTelemetry(
 		otelconfig.WithServiceName(name), otelconfig.WithServiceVersion(getVersion()),
 		otelconfig.WithMetricsEnabled(false),
