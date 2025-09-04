@@ -1,6 +1,8 @@
 # glue
 
-This is maragu.dev/glue, a Go module with glue code for applications. It's an opinionated and personal framework for web applications in Go. I use it for all my web apps.
+This is maragu.dev/glue, a Go module with glue code for applications. It's an opinionated and personal framework for web applications in Go. I use it for all my web apps. It is specifically not a general-purpose framework, so there are many things that are intentionally not configurable.
+
+This also means that breaking changes are okay, since all users of the module are well-known and controlled.
 
 The primary storage is either SQLite or PostgreSQL, for which there is setup code and helpers in packages `sql`, `sqlitetest`, `postgrestest`.
 
