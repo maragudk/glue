@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/errgroup"
 
 	"maragu.dev/httph"
 
@@ -98,19 +99,25 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.setupRoutes()
 
-	go s.stop(ctx)
+	eg, ctx := errgroup.WithContext(ctx)
 
-	if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
-	}
+	eg.Go(func() error {
+		if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
+	})
 
-	return nil
+	eg.Go(func() error {
+		<-ctx.Done()
+		return s.stop(ctx)
+	})
+
+	return eg.Wait()
 }
 
-// stop the Server gracefully when the given context is done, waiting for existing HTTP connections to finish.
+// stop the Server gracefully, waiting for existing HTTP connections to finish.
 func (s *Server) stop(ctx context.Context) error {
-	<-ctx.Done()
-
 	s.log.Info("Stopping server")
 
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
