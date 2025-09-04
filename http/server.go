@@ -93,10 +93,12 @@ func NewServer(opts NewServerOptions) *Server {
 }
 
 // Start the server by setting up routes and listening on the supplied address.
-func (s *Server) Start() error {
+func (s *Server) Start(ctx context.Context) error {
 	s.log.Info("Starting server", "address", s.baseURL, "idleTimeout", s.server.IdleTimeout, "readTimeout", s.server.ReadTimeout, "writeTimeout", s.server.WriteTimeout)
 
 	s.setupRoutes()
+
+	go s.stop(ctx)
 
 	if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
@@ -105,8 +107,10 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Stop the Server gracefully, waiting for existing HTTP connections to finish.
-func (s *Server) Stop(ctx context.Context) error {
+// stop the Server gracefully when the given context is done, waiting for existing HTTP connections to finish.
+func (s *Server) stop(ctx context.Context) error {
+	<-ctx.Done()
+
 	s.log.Info("Stopping server")
 
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
