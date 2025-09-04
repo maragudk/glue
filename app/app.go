@@ -16,8 +16,13 @@ import (
 	"maragu.dev/glue/log"
 )
 
+// Goer is just the executing part of [errgroup.Group].
+type Goer interface {
+	Go(func() error)
+}
+
 // StartFunc is given to [Start] and should not block, instead starting components with the given error group.
-type StartFunc = func(ctx context.Context, log *slog.Logger, eg *errgroup.Group) error
+type StartFunc = func(ctx context.Context, log *slog.Logger, eg Goer) error
 
 // Start sets up the main application context, the [slog.Logger], an [errgroup.Group], and Open Telemetry tracing, and calls the given callback.
 // The callback function should start up all necessary components of the app using the error group, and not block on anything itself in the main goroutine.
