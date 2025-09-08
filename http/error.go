@@ -15,3 +15,5 @@ func NotFound(page html.PageFunc) http.HandlerFunc {
 		return html.NotFoundPage(page), httph.HTTPError{Code: http.StatusNotFound}
 	})
 }
+
+type Error = httph.HTTPError
