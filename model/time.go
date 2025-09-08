@@ -105,3 +105,7 @@ func (t *Time) UnmarshalText(data []byte) error {
 }
 
 var _ encoding.TextUnmarshaler = &Time{}
+
+func Now() Time {
+	return Time{T: time.Now().UTC()}
+}
