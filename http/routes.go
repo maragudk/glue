@@ -1,7 +1,8 @@
 package http
 
 import (
-	"filippo.io/csrf"
+	"net/http"
+
 	"github.com/go-chi/chi/v5/middleware"
 	"maragu.dev/httph"
 )
@@ -14,9 +15,9 @@ func (s *Server) setupRoutes() {
 	r.Use(middleware.RealIP)
 	r.Use(OpenTelemetry)
 
-	protection := csrf.New()
+	protection := http.NewCrossOriginProtection()
 	if err := protection.AddTrustedOrigin(s.baseURL); err != nil {
-		panic("error adding CSRF protection (with " + s.baseURL + "): " + err.Error())
+		panic("error adding trusted origin to CrossOriginProtection middleware (with " + s.baseURL + "): " + err.Error())
 	}
 	r.Use(protection.Handler)
 
