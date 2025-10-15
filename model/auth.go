@@ -1,6 +1,10 @@
 package model
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+	"unicode"
+)
 
 // Role for a user. A user may have 0 to many of these.
 type Role string
@@ -8,6 +12,31 @@ type Role string
 // String satisfies [fmt.Stringer].
 func (r Role) String() string {
 	return string(r)
+}
+
+// Pretty formats the role for display.
+func (r Role) Pretty() string {
+	role := strings.TrimSpace(string(r))
+	if role == "" {
+		return ""
+	}
+
+	role = strings.ReplaceAll(role, "_", " ")
+	role = strings.ReplaceAll(role, "-", " ")
+
+	words := strings.Fields(role)
+	for i, word := range words {
+		lower := strings.ToLower(word)
+		if lower == "" {
+			continue
+		}
+
+		runes := []rune(lower)
+		runes[0] = unicode.ToTitle(runes[0])
+		words[i] = string(runes)
+	}
+
+	return strings.Join(words, " ")
 }
 
 var _ fmt.Stringer = Role("")
