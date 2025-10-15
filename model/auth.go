@@ -27,10 +27,6 @@ func (r Role) Pretty() string {
 	words := strings.Fields(role)
 	for i, word := range words {
 		lower := strings.ToLower(word)
-		if lower == "" {
-			continue
-		}
-
 		runes := []rune(lower)
 		runes[0] = unicode.ToTitle(runes[0])
 		words[i] = string(runes)
