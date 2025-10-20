@@ -2,12 +2,15 @@ package http
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/mileusna/useragent"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -79,6 +82,10 @@ func OpenTelemetry(next http.Handler) http.Handler {
 
 			next.ServeHTTP(w, r)
 
+			if contextCanceled(r.Context().Err()) {
+				span.SetStatus(codes.Unset, "")
+			}
+
 			routePattern := chi.RouteContext(r.Context()).RoutePattern()
 			span.SetName(r.Method + " " + routePattern)
 			span.SetAttributes(semconv.HTTPRoute(routePattern))
@@ -89,6 +96,24 @@ func OpenTelemetry(next http.Handler) http.Handler {
 		}),
 		"", // Setting the name here doesn't matter, it's done on the span above
 	)
+}
+
+func contextCanceled(errs ...error) bool {
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+
+		if errors.Is(err, context.Canceled) {
+			return true
+		}
+
+		if strings.Contains(err.Error(), "context canceled") {
+			return true
+		}
+	}
+
+	return false
 }
 
 // GetRootSpanFromContext stored by the OpenTelemetry middleware.
