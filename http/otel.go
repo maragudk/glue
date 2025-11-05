@@ -80,6 +80,15 @@ func OpenTelemetry(next http.Handler) http.Handler {
 				span.SetAttributes(semconv.DeviceModelName(ua.Device))
 			}
 
+			// Add URL query parameters as individual attributes for easier searching
+			if len(r.URL.Query()) > 0 {
+				attrs := make([]attribute.KeyValue, 0, len(r.URL.Query()))
+				for key, values := range r.URL.Query() {
+					attrs = append(attrs, attribute.StringSlice("url.query."+strings.ToLower(key), values))
+				}
+				span.SetAttributes(attrs...)
+			}
+
 			next.ServeHTTP(w, r)
 
 			if contextCanceled(r.Context().Err()) {
