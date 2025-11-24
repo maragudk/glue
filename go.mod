@@ -8,7 +8,7 @@ require (
 	github.com/alexedwards/scs/v2 v2.9.0
 	github.com/aws/aws-sdk-go-v2 v1.40.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.0
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.91.1
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.92.0
 	github.com/go-chi/chi/v5 v5.2.3
 	github.com/honeycombio/otel-config-go v1.17.0
 	github.com/jackc/pgx/v5 v5.7.6
