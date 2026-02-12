@@ -24,7 +24,7 @@ require (
 	maragu.dev/env v0.2.0
 	maragu.dev/errors v0.3.0
 	maragu.dev/gomponents v1.2.0
-	maragu.dev/goqite v0.3.2-0.20250625131501-cacb23e73698
+	maragu.dev/goqite v0.4.0
 	maragu.dev/httph v0.3.7
 	maragu.dev/is v0.3.1
 	maragu.dev/migrate v0.6.0
@@ -83,7 +83,6 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.39.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.3.1 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/crypto v0.45.0 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.31.0 // indirect
