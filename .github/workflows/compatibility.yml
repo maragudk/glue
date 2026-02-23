@@ -1,0 +1,57 @@
+name: Compatibility
+
+on:
+  schedule:
+    - cron: "14 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        ports:
+          - "5433:5432"
+        env:
+          POSTGRES_USER: "test"
+          POSTGRES_PASSWORD: "test"
+          POSTGRES_DB: "template1"
+      minio:
+        image: maragudk/minio-ci
+        ports:
+          - "9002:9000"
+        env:
+          MINIO_ROOT_USER: "access"
+          MINIO_ROOT_PASSWORD: "secretsecret"
+
+    strategy:
+      fail-fast: false
+      matrix:
+        go:
+          - { go-version: stable }
+          - { go-version-file: go.mod }
+        deps:
+          - locked
+          - latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go.go-version }}
+          go-version-file: ${{ matrix.go.go-version-file }}
+
+      - name: Update to latest deps
+        if: matrix.deps == 'latest'
+        run: go get -u -t ./...
+
+      - name: Test
+        run: go test -shuffle on ./...
