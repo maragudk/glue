@@ -86,14 +86,14 @@ func getAWSConfig(t *testing.T) aws.Config {
 	}
 
 	if os.Getenv("AWS_REGION") == "" {
-		if err := os.Setenv("AWS_REGION", "auto"); err != nil {
+		if err := os.Setenv("AWS_REGION", "us-east-1"); err != nil {
 			t.Fatal(err)
 		}
 		defer func() { _ = os.Unsetenv("AWS_REGION") }()
 	}
 
 	if os.Getenv("AWS_ENDPOINT_URL") == "" {
-		if err := os.Setenv("AWS_ENDPOINT_URL", "http://localhost:9002"); err != nil {
+		if err := os.Setenv("AWS_ENDPOINT_URL", "http://localhost:7072"); err != nil {
 			t.Fatal(err)
 		}
 		defer func() { _ = os.Unsetenv("AWS_ENDPOINT_URL") }()
