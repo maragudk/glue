@@ -21,13 +21,15 @@ jobs:
           POSTGRES_USER: "test"
           POSTGRES_PASSWORD: "test"
           POSTGRES_DB: "template1"
-      minio:
-        image: maragudk/minio-ci
+      versitygw:
+        image: versity/versitygw:latest
         ports:
-          - "9002:9000"
+          - "7072:7070"
         env:
-          MINIO_ROOT_USER: "access"
-          MINIO_ROOT_PASSWORD: "secretsecret"
+          ROOT_ACCESS_KEY: "access"
+          ROOT_SECRET_KEY: "secretsecret"
+          VGW_BACKEND: "posix"
+          VGW_BACKEND_ARG: "/var/lib"
 
     strategy:
       fail-fast: false
