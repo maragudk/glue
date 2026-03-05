@@ -19,7 +19,7 @@ func NewSender(t *testing.T) *postmark.Sender {
 		t.SkipNow()
 	}
 
-	_ = env.Load("../../.env.test")
+	_ = env.Load("../.env.test")
 
 	return postmark.NewSender(postmark.NewSenderOptions{
 		AppName:                   env.GetStringOrDefault("APP_NAME", "Test"),
