@@ -91,7 +91,7 @@ func (h *Helper) Connect(ctx context.Context) error {
 		// - Enable immediate transaction locking, so transactions that are upgraded to write transactions can't fail with a busy error
 		path := h.path + "?_journal=WAL&_timeout=5000&_fk=true&_txlock=immediate"
 
-		h.log.Info("Starting database", "path", path)
+		h.log.InfoContext(ctx, "Starting database", "path", path)
 
 		var err error
 		h.DB, err = sqlx.ConnectContext(ctx, "sqlite3", path)
@@ -107,7 +107,7 @@ func (h *Helper) Connect(ctx context.Context) error {
 	case h.url != "":
 		scrubbedUrl := scrubURL(h.url)
 
-		h.log.Info("Connecting to database", "url", scrubbedUrl)
+		h.log.InfoContext(ctx, "Connecting to database", "url", scrubbedUrl)
 
 		var err error
 		h.DB, err = sqlx.ConnectContext(ctx, "pgx", h.url)
@@ -115,7 +115,7 @@ func (h *Helper) Connect(ctx context.Context) error {
 			return err
 		}
 
-		h.log.Debug("Setting connection pool options",
+		h.log.DebugContext(ctx, "Setting connection pool options",
 			"max open connections", h.maxOpenConnections,
 			"max idle connections", h.maxIdleConnections,
 			"connection max lifetime", h.connectionMaxLifetime,
