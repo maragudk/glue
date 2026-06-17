@@ -91,7 +91,7 @@ func OpenTelemetry(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 
 			// Record whether the client disconnected before we responded. The status code is handled
-			// at the router (see adaptPage); here we just keep the signal queryable on the span.
+			// at the router (see [adaptPage]); here we just keep the signal queryable on the span.
 			if contextCanceled(r.Context().Err()) {
 				span.SetAttributes(attribute.Bool("http.client_disconnected", true))
 			}
