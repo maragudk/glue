@@ -1,6 +1,8 @@
 package http
 
 import (
+	"context"
+	"errors"
 	"net/http"
 
 	"github.com/alexedwards/scs/v2"
@@ -11,6 +13,11 @@ import (
 
 	"maragu.dev/glue/html"
 )
+
+// statusClientClosedRequest is the non-standard 499 status code popularized by nginx ("Client Closed
+// Request"). It is not in the IANA registry, but it is a widely recognized convention for "the client
+// disconnected before we responded".
+const statusClientClosedRequest = 499
 
 type Router struct {
 	Mux chi.Router
@@ -33,27 +40,34 @@ func NewRouter(opts NewRouterOpts) *Router {
 }
 
 func (r *Router) Get(path string, cb func(props html.PageProps) (Node, error)) {
-	r.Mux.Get(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		return cb(GetProps(w, r))
-	}))
+	r.Mux.Get(path, adaptPage(cb))
 }
 
 func (r *Router) Post(path string, cb func(props html.PageProps) (Node, error)) {
-	r.Mux.Post(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		return cb(GetProps(w, r))
-	}))
+	r.Mux.Post(path, adaptPage(cb))
 }
 
 func (r *Router) Put(path string, cb func(props html.PageProps) (Node, error)) {
-	r.Mux.Put(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		return cb(GetProps(w, r))
-	}))
+	r.Mux.Put(path, adaptPage(cb))
 }
 
 func (r *Router) Delete(path string, cb func(props html.PageProps) (Node, error)) {
-	r.Mux.Delete(path, Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		return cb(GetProps(w, r))
-	}))
+	r.Mux.Delete(path, adaptPage(cb))
+}
+
+// adaptPage adapts a page callback to a [http.HandlerFunc]. If the callback returns an error rooted in
+// [context.Canceled], the client disconnected before we responded, so we respond with 499 (Client Closed
+// Request) instead of 500. A vanished client is not a server error, so this keeps these out of the 5xx
+// error rate. A genuine error that merely coincides with a disconnect is not [context.Canceled], so it
+// still surfaces as a 500.
+func adaptPage(cb func(props html.PageProps) (Node, error)) http.HandlerFunc {
+	return Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
+		n, err := cb(GetProps(w, r))
+		if err != nil && errors.Is(err, context.Canceled) {
+			return n, Error{Code: statusClientClosedRequest}
+		}
+		return n, err
+	})
 }
 
 func (r *Router) Group(cb func(r *Router)) {

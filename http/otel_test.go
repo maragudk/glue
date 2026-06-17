@@ -9,7 +9,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"maragu.dev/is"
@@ -165,14 +164,12 @@ func TestOpenTelemetry(t *testing.T) {
 		}
 	})
 
-	t.Run("records a 5xx as 499 and not an error when the client has disconnected", func(t *testing.T) {
+	t.Run("sets client disconnected attribute when the request context is canceled", func(t *testing.T) {
 		sr := oteltest.NewSpanRecorder(t)
 
 		mux := chi.NewMux()
 		mux.Use(gluehttp.OpenTelemetry)
-		mux.Get("/", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
-		})
+		mux.Get("/", func(w http.ResponseWriter, r *http.Request) {})
 
 		// Simulate a client that has gone away by canceling the request context.
 		ctx, cancel := context.WithCancel(context.Background())
@@ -181,26 +178,23 @@ func TestOpenTelemetry(t *testing.T) {
 		mux.ServeHTTP(httptest.NewRecorder(), req)
 
 		span := lastEndedSpan(t, sr)
-		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.HTTPResponseStatusCode(499)))
 		is.True(t, oteltest.HasAttribute(span.Attributes(), attribute.Bool("http.client_disconnected", true)))
-		is.Equal(t, codes.Unset, span.Status().Code)
 	})
 
-	t.Run("keeps a 5xx as an error when the client is still connected", func(t *testing.T) {
+	t.Run("does not set client disconnected attribute when the client is still connected", func(t *testing.T) {
 		sr := oteltest.NewSpanRecorder(t)
 
 		mux := chi.NewMux()
 		mux.Use(gluehttp.OpenTelemetry)
-		mux.Get("/", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
-		})
+		mux.Get("/", func(w http.ResponseWriter, r *http.Request) {})
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		mux.ServeHTTP(httptest.NewRecorder(), req)
 
 		span := lastEndedSpan(t, sr)
-		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.HTTPResponseStatusCode(500)))
-		is.Equal(t, codes.Error, span.Status().Code)
+		for _, attr := range span.Attributes() {
+			is.True(t, attr.Key != "http.client_disconnected", "unexpected client disconnected attribute")
+		}
 	})
 
 	t.Run("stores root span in context", func(t *testing.T) {
