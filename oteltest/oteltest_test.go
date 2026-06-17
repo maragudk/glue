@@ -58,3 +58,19 @@ func TestHasAttribute(t *testing.T) {
 		is.True(t, !oteltest.HasAttribute(nil, attribute.String("foo", "bar")))
 	})
 }
+
+func TestHasAttributeKey(t *testing.T) {
+	t.Run("returns true when the key is present, regardless of value", func(t *testing.T) {
+		attrs := []attribute.KeyValue{attribute.String("foo", "bar")}
+		is.True(t, oteltest.HasAttributeKey(attrs, "foo"))
+	})
+
+	t.Run("returns false when the key is missing", func(t *testing.T) {
+		attrs := []attribute.KeyValue{attribute.String("foo", "bar")}
+		is.True(t, !oteltest.HasAttributeKey(attrs, "missing"))
+	})
+
+	t.Run("returns false for empty slice", func(t *testing.T) {
+		is.True(t, !oteltest.HasAttributeKey(nil, "foo"))
+	})
+}

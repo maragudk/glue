@@ -10,7 +10,6 @@ import (
 	"github.com/mileusna/useragent"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -91,8 +90,10 @@ func OpenTelemetry(next http.Handler) http.Handler {
 
 			next.ServeHTTP(w, r)
 
+			// Record whether the client disconnected before we responded. The status code is handled
+			// at the router (see [adaptPage]); here we just keep the signal queryable on the span.
 			if contextCanceled(r.Context().Err()) {
-				span.SetStatus(codes.Unset, "")
+				span.SetAttributes(attribute.Bool("http.client_disconnected", true))
 			}
 
 			routePattern := chi.RouteContext(r.Context()).RoutePattern()
