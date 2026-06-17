@@ -40,3 +40,13 @@ func HasAttribute(attrs []attribute.KeyValue, want attribute.KeyValue) bool {
 	}
 	return false
 }
+
+// HasAttributeKey checks whether an attribute with the given key is present in the slice, ignoring its value.
+func HasAttributeKey(attrs []attribute.KeyValue, key attribute.Key) bool {
+	for _, attr := range attrs {
+		if attr.Key == key {
+			return true
+		}
+	}
+	return false
+}

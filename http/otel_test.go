@@ -192,9 +192,7 @@ func TestOpenTelemetry(t *testing.T) {
 		mux.ServeHTTP(httptest.NewRecorder(), req)
 
 		span := lastEndedSpan(t, sr)
-		for _, attr := range span.Attributes() {
-			is.True(t, attr.Key != "http.client_disconnected", "unexpected client disconnected attribute")
-		}
+		is.True(t, !oteltest.HasAttributeKey(span.Attributes(), "http.client_disconnected"), "unexpected client disconnected attribute")
 	})
 
 	t.Run("stores root span in context", func(t *testing.T) {

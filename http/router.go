@@ -64,7 +64,7 @@ func adaptPage(cb func(props html.PageProps) (Node, error)) http.HandlerFunc {
 	return Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
 		n, err := cb(GetProps(w, r))
 		if err != nil && errors.Is(err, context.Canceled) {
-			return n, Error{Code: statusClientClosedRequest}
+			return n, Error{Code: statusClientClosedRequest, Err: err}
 		}
 		return n, err
 	})
