@@ -1,8 +1,10 @@
 package http
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 
@@ -10,7 +12,6 @@ import (
 	"github.com/mileusna/useragent"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -89,10 +90,13 @@ func OpenTelemetry(next http.Handler) http.Handler {
 				span.SetAttributes(attrs...)
 			}
 
-			next.ServeHTTP(w, r)
+			// Wrap the response writer so that a 5xx written after the client has disconnected is
+			// recorded as 499 instead. A vanished client is not a server error, so we keep these
+			// out of the 5xx error rate and out of error-based alerting.
+			next.ServeHTTP(&clientDisconnectWriter{ResponseWriter: w, r: r}, r)
 
 			if contextCanceled(r.Context().Err()) {
-				span.SetStatus(codes.Unset, "")
+				span.SetAttributes(attribute.Bool("http.client_disconnected", true))
 			}
 
 			routePattern := chi.RouteContext(r.Context()).RoutePattern()
@@ -105,6 +109,47 @@ func OpenTelemetry(next http.Handler) http.Handler {
 		}),
 		"", // Setting the name here doesn't matter, it's done on the span above
 	)
+}
+
+// statusClientClosedRequest is the non-standard 499 status code popularized by nginx ("Client Closed
+// Request"). It is not in the IANA registry, but it is a widely recognized convention for "the client
+// disconnected before we responded".
+const statusClientClosedRequest = 499
+
+// clientDisconnectWriter rewrites a 5xx status to [statusClientClosedRequest] when the request context
+// has been canceled, i.e. the client disconnected before we responded. The handler still runs to
+// completion (Go cannot abort it), but the response is no longer recorded as a server error.
+type clientDisconnectWriter struct {
+	http.ResponseWriter
+	r *http.Request
+}
+
+func (w *clientDisconnectWriter) WriteHeader(statusCode int) {
+	if statusCode >= 500 && contextCanceled(w.r.Context().Err()) {
+		statusCode = statusClientClosedRequest
+	}
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+// Unwrap returns the wrapped [http.ResponseWriter] so that [http.ResponseController] can reach optional
+// interfaces such as [http.Flusher] and [http.Hijacker].
+func (w *clientDisconnectWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+// Flush delegates to the wrapped writer so streaming responses (e.g. server-sent events) keep working.
+func (w *clientDisconnectWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack delegates to the wrapped writer so connection upgrades (e.g. WebSockets) keep working.
+func (w *clientDisconnectWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
 }
 
 func contextCanceled(errs ...error) bool {
