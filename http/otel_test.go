@@ -1,6 +1,7 @@
 package http_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -161,6 +162,37 @@ func TestOpenTelemetry(t *testing.T) {
 		for _, attr := range span.Attributes() {
 			is.True(t, !strings.HasPrefix(string(attr.Key), "url.query."), "unexpected query attribute")
 		}
+	})
+
+	t.Run("sets client disconnected attribute when the request context is canceled", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		mux := chi.NewMux()
+		mux.Use(gluehttp.OpenTelemetry)
+		mux.Get("/", func(w http.ResponseWriter, r *http.Request) {})
+
+		// Simulate a client that has gone away by canceling the request context.
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+		mux.ServeHTTP(httptest.NewRecorder(), req)
+
+		span := lastEndedSpan(t, sr)
+		is.True(t, oteltest.HasAttribute(span.Attributes(), attribute.Bool("http.client_disconnected", true)))
+	})
+
+	t.Run("does not set client disconnected attribute when the client is still connected", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		mux := chi.NewMux()
+		mux.Use(gluehttp.OpenTelemetry)
+		mux.Get("/", func(w http.ResponseWriter, r *http.Request) {})
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		mux.ServeHTTP(httptest.NewRecorder(), req)
+
+		span := lastEndedSpan(t, sr)
+		is.True(t, !oteltest.HasAttributeKey(span.Attributes(), "http.client_disconnected"), "unexpected client disconnected attribute")
 	})
 
 	t.Run("stores root span in context", func(t *testing.T) {
