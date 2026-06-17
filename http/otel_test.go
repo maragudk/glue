@@ -172,7 +172,7 @@ func TestOpenTelemetry(t *testing.T) {
 		mux.Get("/", func(w http.ResponseWriter, r *http.Request) {})
 
 		// Simulate a client that has gone away by canceling the request context.
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
 		mux.ServeHTTP(httptest.NewRecorder(), req)

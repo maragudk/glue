@@ -55,7 +55,7 @@ func (r *Router) Delete(path string, cb func(props html.PageProps) (Node, error)
 	r.Mux.Delete(path, adaptPage(cb))
 }
 
-// adaptPage adapts a page callback to a [http.HandlerFunc]. If the callback returns an error rooted in
+// adaptPage turns a page callback into a [http.HandlerFunc]. If the callback returns an error rooted in
 // [context.Canceled], the client disconnected before we responded, so we respond with 499 (Client Closed
 // Request) instead of 500. A vanished client is not a server error, so this keeps these out of the 5xx
 // error rate. A genuine error that merely coincides with a disconnect is not [context.Canceled], so it
