@@ -8,10 +8,10 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 	"maragu.dev/is"
+
+	"maragu.dev/glue/oteltest"
 )
 
 func TestNewLogger(t *testing.T) {
@@ -89,21 +89,14 @@ func TestNewLogger(t *testing.T) {
 	})
 }
 
-// newSpan starts a recording span backed by a [tracetest.SpanRecorder] and returns the context
+// newSpan starts a recording span backed by [oteltest.NewSpanRecorder] and returns the context
 // carrying it together with the span.
 func newSpan(t *testing.T) (context.Context, trace.Span) {
 	t.Helper()
 
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	oteltest.NewSpanRecorder(t)
 
-	previous := otel.GetTracerProvider()
-	otel.SetTracerProvider(tp)
-	t.Cleanup(func() {
-		otel.SetTracerProvider(previous)
-	})
-
-	return tp.Tracer("test").Start(t.Context(), "test")
+	return otel.Tracer("test").Start(t.Context(), "test")
 }
 
 func decode(t *testing.T, b []byte) map[string]any {
