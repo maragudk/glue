@@ -46,16 +46,16 @@ func Start(startCallback StartFunc) {
 	})
 
 	name := env.GetStringOrDefault("APP_NAME", "App")
-	log.Info("Starting app", "name", name)
+	log.InfoContext(ctx, "Starting app", "name", name)
 
 	// We call the callback so it can return errors and we can handle it just here.
 	// Also makes it easier to test starting the app if needed, because tests don't handle os.Exit well.
 	if err := start(ctx, log, name, startCallback); err != nil {
-		log.Error("Error starting app", "name", name, "error", err)
+		log.ErrorContext(ctx, "Error starting app", "name", name, "error", err)
 		os.Exit(1)
 	}
 
-	log.Info("Stopped app", "name", name)
+	log.InfoContext(ctx, "Stopped app", "name", name)
 }
 
 func start(ctx context.Context, log *slog.Logger, name string, startCallback StartFunc) error {
@@ -78,7 +78,7 @@ func start(ctx context.Context, log *slog.Logger, name string, startCallback Sta
 
 	// Wait for the context to be done, which happens when the user sends a SIGTERM or SIGINT signal.
 	<-ctx.Done()
-	log.Info("Stopping app", "name", name)
+	log.InfoContext(ctx, "Stopping app", "name", name)
 
 	return eg.Wait()
 }

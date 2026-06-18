@@ -95,7 +95,7 @@ func NewServer(opts NewServerOptions) *Server {
 
 // Start the server by setting up routes and listening on the supplied address.
 func (s *Server) Start(ctx context.Context) error {
-	s.log.Info("Starting server", "address", s.baseURL, "idleTimeout", s.server.IdleTimeout, "readTimeout", s.server.ReadTimeout, "writeTimeout", s.server.WriteTimeout)
+	s.log.InfoContext(ctx, "Starting server", "address", s.baseURL, "idleTimeout", s.server.IdleTimeout, "readTimeout", s.server.ReadTimeout, "writeTimeout", s.server.WriteTimeout)
 
 	s.setupRoutes()
 
@@ -118,7 +118,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 // stop the Server gracefully, waiting for existing HTTP connections to finish.
 func (s *Server) stop(ctx context.Context) error {
-	s.log.Info("Stopping server")
+	s.log.InfoContext(ctx, "Stopping server")
 
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancel()
@@ -127,7 +127,7 @@ func (s *Server) stop(ctx context.Context) error {
 		return err
 	}
 
-	s.log.Info("Stopped server")
+	s.log.InfoContext(ctx, "Stopped server")
 
 	return nil
 }

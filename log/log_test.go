@@ -15,9 +15,9 @@ import (
 )
 
 func TestNewLogger(t *testing.T) {
-	t.Run("adds trace_id and span_id when logging within an active span", func(t *testing.T) {
+	t.Run("adds trace_id and span_id at the top level when logging within an active span", func(t *testing.T) {
 		var buf bytes.Buffer
-		logger := slog.New(newTraceHandler(slog.NewJSONHandler(&buf, nil)))
+		logger := slog.New(&traceHandler{Handler: slog.NewJSONHandler(&buf, nil)})
 
 		ctx, span := newSpan(t)
 		defer span.End()
@@ -31,7 +31,7 @@ func TestNewLogger(t *testing.T) {
 
 	t.Run("does not add trace_id or span_id without an active span", func(t *testing.T) {
 		var buf bytes.Buffer
-		logger := slog.New(newTraceHandler(slog.NewJSONHandler(&buf, nil)))
+		logger := slog.New(&traceHandler{Handler: slog.NewJSONHandler(&buf, nil)})
 
 		logger.InfoContext(t.Context(), "hello")
 
@@ -42,9 +42,22 @@ func TestNewLogger(t *testing.T) {
 		is.True(t, !hasSpanID)
 	})
 
-	t.Run("propagates trace context through WithAttrs", func(t *testing.T) {
+	t.Run("does not add trace_id or span_id when not logging with a context", func(t *testing.T) {
 		var buf bytes.Buffer
-		logger := slog.New(newTraceHandler(slog.NewJSONHandler(&buf, nil))).
+		logger := slog.New(&traceHandler{Handler: slog.NewJSONHandler(&buf, nil)})
+
+		logger.Info("hello")
+
+		entry := decode(t, buf.Bytes())
+		_, hasTraceID := entry["trace_id"]
+		_, hasSpanID := entry["span_id"]
+		is.True(t, !hasTraceID)
+		is.True(t, !hasSpanID)
+	})
+
+	t.Run("keeps trace correlation at the top level after WithAttrs", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(&traceHandler{Handler: slog.NewJSONHandler(&buf, nil)}).
 			With("component", "test")
 
 		ctx, span := newSpan(t)
@@ -58,9 +71,9 @@ func TestNewLogger(t *testing.T) {
 		is.Equal(t, span.SpanContext().SpanID().String(), entry["span_id"].(string))
 	})
 
-	t.Run("keeps trace_id and span_id at the top level under a group", func(t *testing.T) {
+	t.Run("nests trace_id and span_id under a group, alongside the record's attributes", func(t *testing.T) {
 		var buf bytes.Buffer
-		logger := slog.New(newTraceHandler(slog.NewJSONHandler(&buf, nil))).
+		logger := slog.New(&traceHandler{Handler: slog.NewJSONHandler(&buf, nil)}).
 			WithGroup("g")
 
 		ctx, span := newSpan(t)
@@ -69,11 +82,38 @@ func TestNewLogger(t *testing.T) {
 		logger.InfoContext(ctx, "hello", "k", "v")
 
 		entry := decode(t, buf.Bytes())
-		is.Equal(t, span.SpanContext().TraceID().String(), entry["trace_id"].(string))
-		is.Equal(t, span.SpanContext().SpanID().String(), entry["span_id"].(string))
 
-		// The caller's own attribute nests under the group, but the trace fields stay at the top level.
+		// The trace fields follow the record's grouping, so they nest under the group together with
+		// the record's own attribute. Nothing trace-related is left at the top level.
+		_, hasTopLevelTraceID := entry["trace_id"]
+		is.True(t, !hasTopLevelTraceID)
+
 		group := entry["g"].(map[string]any)
+		is.Equal(t, span.SpanContext().TraceID().String(), group["trace_id"].(string))
+		is.Equal(t, span.SpanContext().SpanID().String(), group["span_id"].(string))
+		is.Equal(t, "v", group["k"].(string))
+	})
+
+	t.Run("keeps WithAttrs attributes top level and nests trace under a later group", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(&traceHandler{Handler: slog.NewJSONHandler(&buf, nil)}).
+			With("component", "test").
+			WithGroup("g")
+
+		ctx, span := newSpan(t)
+		defer span.End()
+
+		logger.InfoContext(ctx, "hello", "k", "v")
+
+		entry := decode(t, buf.Bytes())
+
+		// The attribute added before the group stays at the top level.
+		is.Equal(t, "test", entry["component"].(string))
+
+		// The trace fields and the record attribute land inside the open group.
+		group := entry["g"].(map[string]any)
+		is.Equal(t, span.SpanContext().TraceID().String(), group["trace_id"].(string))
+		is.Equal(t, span.SpanContext().SpanID().String(), group["span_id"].(string))
 		is.Equal(t, "v", group["k"].(string))
 	})
 
@@ -86,6 +126,17 @@ func TestNewLogger(t *testing.T) {
 		entry := decode(t, buf.Bytes())
 		_, hasTime := entry["time"]
 		is.True(t, !hasTime)
+	})
+
+	t.Run("keeps the time attribute by default", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := NewLogger(NewLoggerOptions{JSON: true, W: &buf})
+
+		logger.Info("hello")
+
+		entry := decode(t, buf.Bytes())
+		_, hasTime := entry["time"]
+		is.True(t, hasTime)
 	})
 }
 
