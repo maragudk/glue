@@ -17,7 +17,7 @@ import (
 func TestNewLogger(t *testing.T) {
 	t.Run("adds trace_id and span_id when logging within an active span", func(t *testing.T) {
 		var buf bytes.Buffer
-		logger := slog.New(&traceHandler{Handler: slog.NewJSONHandler(&buf, nil)})
+		logger := slog.New(newTraceHandler(slog.NewJSONHandler(&buf, nil)))
 
 		ctx, span := newSpan(t)
 		defer span.End()
@@ -31,7 +31,7 @@ func TestNewLogger(t *testing.T) {
 
 	t.Run("does not add trace_id or span_id without an active span", func(t *testing.T) {
 		var buf bytes.Buffer
-		logger := slog.New(&traceHandler{Handler: slog.NewJSONHandler(&buf, nil)})
+		logger := slog.New(newTraceHandler(slog.NewJSONHandler(&buf, nil)))
 
 		logger.InfoContext(t.Context(), "hello")
 
@@ -44,7 +44,7 @@ func TestNewLogger(t *testing.T) {
 
 	t.Run("propagates trace context through WithAttrs", func(t *testing.T) {
 		var buf bytes.Buffer
-		logger := slog.New(&traceHandler{Handler: slog.NewJSONHandler(&buf, nil)}).
+		logger := slog.New(newTraceHandler(slog.NewJSONHandler(&buf, nil))).
 			With("component", "test")
 
 		ctx, span := newSpan(t)
@@ -58,9 +58,34 @@ func TestNewLogger(t *testing.T) {
 		is.Equal(t, span.SpanContext().SpanID().String(), entry["span_id"].(string))
 	})
 
+	t.Run("keeps trace_id and span_id at the top level under a group", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(newTraceHandler(slog.NewJSONHandler(&buf, nil))).
+			WithGroup("g")
+
+		ctx, span := newSpan(t)
+		defer span.End()
+
+		logger.InfoContext(ctx, "hello", "k", "v")
+
+		entry := decode(t, buf.Bytes())
+		is.Equal(t, span.SpanContext().TraceID().String(), entry["trace_id"].(string))
+		is.Equal(t, span.SpanContext().SpanID().String(), entry["span_id"].(string))
+
+		// The caller's own attribute nests under the group, but the trace fields stay at the top level.
+		group := entry["g"].(map[string]any)
+		is.Equal(t, "v", group["k"].(string))
+	})
+
 	t.Run("strips the time attribute when NoTime is set", func(t *testing.T) {
-		logger := NewLogger(NewLoggerOptions{JSON: true, NoTime: true})
-		is.True(t, logger != nil)
+		var buf bytes.Buffer
+		logger := NewLogger(NewLoggerOptions{JSON: true, NoTime: true, W: &buf})
+
+		logger.Info("hello")
+
+		entry := decode(t, buf.Bytes())
+		_, hasTime := entry["time"]
+		is.True(t, !hasTime)
 	})
 }
 

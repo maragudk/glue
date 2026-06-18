@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -37,7 +38,9 @@ func NewBucket(opts NewBucketOptions) *Bucket {
 	}
 
 	// Instrument the AWS SDK client so each S3 API call emits a span nested under the app-level
-	// spans (s3.put, s3.get, etc.), carrying AWS request IDs and retry information.
+	// spans (s3.put, s3.get, etc.), carrying AWS request IDs and retry information. Clone APIOptions
+	// first, so we don't mutate the caller's Config or double-instrument when several buckets share one.
+	opts.Config.APIOptions = slices.Clone(opts.Config.APIOptions)
 	otelaws.AppendMiddlewares(&opts.Config.APIOptions)
 
 	client := s3.NewFromConfig(opts.Config, func(o *s3.Options) {
