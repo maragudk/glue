@@ -7,6 +7,7 @@ import (
 	"time"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"maragu.dev/is"
 
 	"maragu.dev/glue/oteltest"
@@ -41,7 +42,7 @@ func TestBucket(t *testing.T) {
 		is.NotError(t, err)
 	})
 
-	t.Run("records an app-level span and a nested AWS SDK span when putting an object", func(t *testing.T) {
+	t.Run("records a span with the bucket and key when putting an object", func(t *testing.T) {
 		sr := oteltest.NewSpanRecorder(t)
 
 		b := s3test.NewBucket(t)
@@ -49,18 +50,9 @@ func TestBucket(t *testing.T) {
 		err := b.Put(t.Context(), "test", "text/plain", strings.NewReader("hello"))
 		is.NotError(t, err)
 
-		spans := sr.Ended()
-
-		appSpan := findSpan(t, spans, "s3.put")
-		is.True(t, appSpan != nil)
-
-		// otelaws names SDK spans "<Service>.<Operation>", e.g. "S3.PutObject".
-		sdkSpan := findSpan(t, spans, "S3.PutObject")
-		is.True(t, sdkSpan != nil)
-
-		// The SDK span should nest under the app-level span, sharing its trace and pointing at it as parent.
-		is.Equal(t, appSpan.SpanContext().TraceID().String(), sdkSpan.SpanContext().TraceID().String())
-		is.Equal(t, appSpan.SpanContext().SpanID().String(), sdkSpan.Parent().SpanID().String())
+		span := findSpan(t, sr.Ended(), "s3.put")
+		is.True(t, span != nil)
+		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.AWSS3Key("test")))
 	})
 }
 
