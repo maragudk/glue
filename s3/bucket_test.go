@@ -6,8 +6,11 @@ import (
 	"testing"
 	"time"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"maragu.dev/is"
 
+	"maragu.dev/glue/oteltest"
 	"maragu.dev/glue/s3test"
 )
 
@@ -37,6 +40,58 @@ func TestBucket(t *testing.T) {
 
 		err = b.Delete(t.Context(), "test")
 		is.NotError(t, err)
+	})
+
+	t.Run("records a span with the bucket and key when putting an object", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		b := s3test.NewBucket(t)
+
+		err := b.Put(t.Context(), "test", "text/plain", strings.NewReader("hello"))
+		is.NotError(t, err)
+
+		span := findSpan(t, sr.Ended(), "s3.put")
+		is.True(t, span != nil)
+		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.AWSS3Key("test")))
+	})
+
+	t.Run("records a span with the bucket and key when getting an object", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		b := s3test.NewBucket(t)
+
+		_, err := b.Get(t.Context(), "test")
+		is.NotError(t, err)
+
+		span := findSpan(t, sr.Ended(), "s3.get")
+		is.True(t, span != nil)
+		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.AWSS3Key("test")))
+	})
+
+	t.Run("records a span with the bucket and key when deleting an object", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		b := s3test.NewBucket(t)
+
+		err := b.Delete(t.Context(), "test")
+		is.NotError(t, err)
+
+		span := findSpan(t, sr.Ended(), "s3.delete")
+		is.True(t, span != nil)
+		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.AWSS3Key("test")))
+	})
+
+	t.Run("records a span with the bucket and prefix when listing objects", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		b := s3test.NewBucket(t)
+
+		_, err := b.List(t.Context(), "test", 100)
+		is.NotError(t, err)
+
+		span := findSpan(t, sr.Ended(), "s3.list")
+		is.True(t, span != nil)
+		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.AWSS3Key("test")))
 	})
 }
 
@@ -85,4 +140,14 @@ func TestBucket_GetPresignedURL(t *testing.T) {
 		is.True(t, strings.Contains(url, "/test?X-Amz-Algorithm"))
 		is.True(t, strings.Contains(url, "Expires=3600"))
 	})
+}
+
+func findSpan(t *testing.T, spans []sdktrace.ReadOnlySpan, name string) sdktrace.ReadOnlySpan {
+	t.Helper()
+	for _, s := range spans {
+		if s.Name() == name {
+			return s
+		}
+	}
+	return nil
 }

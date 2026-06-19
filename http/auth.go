@@ -65,7 +65,7 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 			if err != nil {
 				if errors.Is(err, model.ErrorUserNotFound) {
 					if err := sgd.Destroy(ctx); err != nil {
-						log.Info("Error destroying session for nonexistent user", "error", err, "userID", userID)
+						log.InfoContext(ctx, "Error destroying session for nonexistent user", "error", err, "userID", userID)
 						http.Error(w, "error destroying session after authentication", http.StatusInternalServerError)
 						return
 					}
@@ -75,7 +75,7 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 					return
 				}
 
-				log.Info("Error getting user after authentication", "error", err, "userID", userID)
+				log.InfoContext(ctx, "Error getting user after authentication", "error", err, "userID", userID)
 				http.Error(w, "error getting user after authentication", http.StatusInternalServerError)
 				return
 			}
@@ -83,7 +83,7 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 			// Destroy the session if the user is not active, but continue processing the request
 			if !active {
 				if err := sgd.Destroy(ctx); err != nil {
-					log.Info("Error destroying session for inactive user", "error", err, "userID", userID)
+					log.InfoContext(ctx, "Error destroying session for inactive user", "error", err, "userID", userID)
 					http.Error(w, "error destroying session after authentication", http.StatusInternalServerError)
 					return
 				}
@@ -132,7 +132,7 @@ func Authorize(log *slog.Logger, pg permissionsGetter, requiredPermissions ...mo
 
 			permissions, err := pg.GetPermissions(ctx, *userID)
 			if err != nil {
-				log.Info("Error getting permissions", "error", err, "userID", userID)
+				log.InfoContext(ctx, "Error getting permissions", "error", err, "userID", userID)
 				http.Error(w, "error getting permissions", http.StatusInternalServerError)
 				return
 			}
@@ -186,7 +186,7 @@ func SavePermissionsInContext(log *slog.Logger, pg permissionsGetter) Middleware
 
 			permissions, err := pg.GetPermissions(ctx, *userID)
 			if err != nil {
-				log.Error("Error getting permissions", "error", err, "userID", userID)
+				log.ErrorContext(ctx, "Error getting permissions", "error", err, "userID", userID)
 				http.Error(w, "error getting permissions", http.StatusInternalServerError)
 				return
 			}
@@ -221,7 +221,7 @@ func Logout(r *Router, log *slog.Logger, sd sessionDestroyer, page html.PageFunc
 		}
 
 		if err := sd.Destroy(props.Ctx); err != nil {
-			log.Error("Error logging out", "error", err)
+			log.ErrorContext(props.Ctx, "Error logging out", "error", err)
 			return html.ErrorPage(page), err
 		}
 

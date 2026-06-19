@@ -231,11 +231,11 @@ func (s *Sender) sendRequest(ctx context.Context, body requestBody) error {
 		// https://postmarkapp.com/developer/api/overview#error-codes
 		switch r.ErrorCode {
 		case 406:
-			s.log.Info("Not sending email, recipient is inactive", "recipient", body.To)
+			s.log.InfoContext(ctx, "Not sending email, recipient is inactive", "recipient", body.To)
 			span.SetStatus(codes.Ok, "recipient inactive, email not sent")
 			return nil
 		default:
-			s.log.Error("Error sending email, got error code", "error code", r.ErrorCode, "message", r.Message)
+			s.log.ErrorContext(ctx, "Error sending email, got error code", "error code", r.ErrorCode, "message", r.Message)
 			err := errors.Newf("error sending email, got error code %v", r.ErrorCode)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "postmark error")
@@ -244,7 +244,7 @@ func (s *Sender) sendRequest(ctx context.Context, body requestBody) error {
 	}
 
 	if res.StatusCode >= 300 {
-		s.log.Info("Error sending email, got http status code", "status code", res.StatusCode, "body", string(bodyAsBytes))
+		s.log.InfoContext(ctx, "Error sending email, got http status code", "status code", res.StatusCode, "body", string(bodyAsBytes))
 		err := errors.Newf("error sending email, got http status code %v", res.StatusCode)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "http error")
