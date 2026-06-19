@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"maragu.dev/is"
 
+	"maragu.dev/glue/oteltest"
 	"maragu.dev/glue/s3test"
 )
 
@@ -37,6 +39,28 @@ func TestBucket(t *testing.T) {
 
 		err = b.Delete(t.Context(), "test")
 		is.NotError(t, err)
+	})
+
+	t.Run("records an app-level span and a nested AWS SDK span when putting an object", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		b := s3test.NewBucket(t)
+
+		err := b.Put(t.Context(), "test", "text/plain", strings.NewReader("hello"))
+		is.NotError(t, err)
+
+		spans := sr.Ended()
+
+		appSpan := findSpan(t, spans, "s3.put")
+		is.True(t, appSpan != nil)
+
+		// otelaws names SDK spans "<Service>.<Operation>", e.g. "S3.PutObject".
+		sdkSpan := findSpan(t, spans, "S3.PutObject")
+		is.True(t, sdkSpan != nil)
+
+		// The SDK span should nest under the app-level span, sharing its trace and pointing at it as parent.
+		is.Equal(t, appSpan.SpanContext().TraceID().String(), sdkSpan.SpanContext().TraceID().String())
+		is.Equal(t, appSpan.SpanContext().SpanID().String(), sdkSpan.Parent().SpanID().String())
 	})
 }
 
@@ -85,4 +109,14 @@ func TestBucket_GetPresignedURL(t *testing.T) {
 		is.True(t, strings.Contains(url, "/test?X-Amz-Algorithm"))
 		is.True(t, strings.Contains(url, "Expires=3600"))
 	})
+}
+
+func findSpan(t *testing.T, spans []sdktrace.ReadOnlySpan, name string) sdktrace.ReadOnlySpan {
+	t.Helper()
+	for _, s := range spans {
+		if s.Name() == name {
+			return s
+		}
+	}
+	return nil
 }
