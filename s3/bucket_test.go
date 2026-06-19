@@ -54,6 +54,45 @@ func TestBucket(t *testing.T) {
 		is.True(t, span != nil)
 		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.AWSS3Key("test")))
 	})
+
+	t.Run("records a span with the bucket and key when getting an object", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		b := s3test.NewBucket(t)
+
+		_, err := b.Get(t.Context(), "test")
+		is.NotError(t, err)
+
+		span := findSpan(t, sr.Ended(), "s3.get")
+		is.True(t, span != nil)
+		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.AWSS3Key("test")))
+	})
+
+	t.Run("records a span with the bucket and key when deleting an object", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		b := s3test.NewBucket(t)
+
+		err := b.Delete(t.Context(), "test")
+		is.NotError(t, err)
+
+		span := findSpan(t, sr.Ended(), "s3.delete")
+		is.True(t, span != nil)
+		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.AWSS3Key("test")))
+	})
+
+	t.Run("records a span with the bucket and prefix when listing objects", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		b := s3test.NewBucket(t)
+
+		_, err := b.List(t.Context(), "test", 100)
+		is.NotError(t, err)
+
+		span := findSpan(t, sr.Ended(), "s3.list")
+		is.True(t, span != nil)
+		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.AWSS3Key("test")))
+	})
 }
 
 func TestBucket_List(t *testing.T) {
