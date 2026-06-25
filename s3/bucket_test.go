@@ -81,6 +81,19 @@ func TestBucket(t *testing.T) {
 		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.AWSS3Key("test")))
 	})
 
+	t.Run("records a span with the bucket and key when checking whether an object exists", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		b := s3test.NewBucket(t)
+
+		_, err := b.Exists(t.Context(), "test")
+		is.NotError(t, err)
+
+		span := findSpan(t, sr.Ended(), "s3.exists")
+		is.True(t, span != nil)
+		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.AWSS3Key("test")))
+	})
+
 	t.Run("records a span with the bucket and prefix when listing objects", func(t *testing.T) {
 		sr := oteltest.NewSpanRecorder(t)
 
@@ -126,6 +139,27 @@ func TestBucket_List(t *testing.T) {
 		keys, err = b.List(t.Context(), "test1", 100)
 		is.NotError(t, err)
 		is.EqualSlice(t, []string{"test1"}, keys)
+	})
+}
+
+func TestBucket_Exists(t *testing.T) {
+	t.Run("returns true when an object exists", func(t *testing.T) {
+		b := s3test.NewBucket(t)
+
+		err := b.Put(t.Context(), "test", "text/plain", strings.NewReader("hello"))
+		is.NotError(t, err)
+
+		exists, err := b.Exists(t.Context(), "test")
+		is.NotError(t, err)
+		is.True(t, exists)
+	})
+
+	t.Run("returns false when an object does not exist", func(t *testing.T) {
+		b := s3test.NewBucket(t)
+
+		exists, err := b.Exists(t.Context(), "test")
+		is.NotError(t, err)
+		is.Equal(t, false, exists)
 	})
 }
 
