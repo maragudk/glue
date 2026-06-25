@@ -94,6 +94,29 @@ func (b *Bucket) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	return getObjectOutput.Body, nil
 }
 
+// Exists reports whether an object exists under key.
+// It uses a HEAD request, so no object body is transferred.
+func (b *Bucket) Exists(ctx context.Context, key string) (bool, error) {
+	ctx, span := b.operationTracerStart(ctx, "s3.exists", key)
+	defer span.End()
+
+	_, err := b.Client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: &b.name,
+		Key:    &key,
+	})
+	if err != nil {
+		var notFoundError *types.NotFound
+		if errors.As(err, &notFoundError) {
+			return false, nil
+		}
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "exists failed")
+		return false, err
+	}
+
+	return true, nil
+}
+
 // Delete an object under key.
 // Deleting where nothing exists does nothing and returns no error.
 func (b *Bucket) Delete(ctx context.Context, key string) error {
