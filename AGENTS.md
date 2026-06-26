@@ -10,7 +10,7 @@ The primary storage is either SQLite or PostgreSQL, for which there is setup cod
 
 Background jobs use a queue in the database, and supporting code is in `jobs`.
 
-HTTP server, handlers, and middleware is in `http`. HTTP session storage is set up in `sqlitestore` or `postgresstore`. HTML is generated with gomponents in the `html` package.
+HTTP server, handlers, and middleware are in `http`. HTTP session storage is set up in `sqlitestore` or `postgresstore`. HTML is generated with gomponents in the `html` package.
 
 Transactional emails are sent using postmark, see `email`.
 
