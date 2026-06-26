@@ -4,6 +4,8 @@ This is maragu.dev/glue, a Go module with glue code for applications. It's an op
 
 This also means that breaking changes are okay, since all users of the module are well-known and controlled.
 
+Even so, glue is a library: don't justify code decisions by assuming how consumers use it. A code path you can't see in this repo may still be exercised by a consumer, so design and review for correctness across all valid uses of the public API. (Breaking changes are fine because callers can be updated; assuming runtime usage patterns is not.)
+
 The primary storage is either SQLite or PostgreSQL, for which there is setup code and helpers in packages `sql`, `sqlitetest`, `postgrestest`.
 
 Background jobs use a queue in the database, and supporting code is in `jobs`.
