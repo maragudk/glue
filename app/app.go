@@ -24,7 +24,7 @@ type Goer interface {
 // StartFunc is given to [Start] and should not block, instead starting components with the given error group.
 type StartFunc = func(ctx context.Context, log *slog.Logger, eg Goer) error
 
-// Start sets up the main application context, the [slog.Logger], an [errgroup.Group], and Open Telemetry tracing, and calls the given callback.
+// Start sets up the main application context, the [slog.Logger], an [errgroup.Group], and OpenTelemetry tracing, and calls the given callback.
 // The callback function should start up all necessary components of the app using the error group, and not block on anything itself in the main goroutine.
 func Start(startCallback StartFunc) {
 	// Catch SIGTERM and SIGINT from the terminal, so we can do clean shutdowns.
