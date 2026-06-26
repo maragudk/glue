@@ -26,7 +26,7 @@ func (h *Helper) MigrateDown(ctx context.Context) error {
 	return migrate.Down(ctx, h.DB.DB, h.getMigrations())
 }
 
-// getMigrations both embedded here in this module, as well as in the client module.
+// getMigrations returns the migrations embedded here in this module, as well as those in the client module.
 func (h *Helper) getMigrations() fs.FS {
 	migrationsOnce.Do(func() {
 		migrationsDirs := []fs.FS{migrations}
