@@ -2,8 +2,8 @@
 
 <img src="logo.jpg" alt="Logo" width="300" align="right">
 
-[![Docs](https://pkg.go.dev/badge/maragu.dev/gloo)](https://pkg.go.dev/maragu.dev/gloo)
-[![CI](https://github.com/maragudk/gloo/actions/workflows/ci.yml/badge.svg)](https://github.com/maragudk/gloo/actions/workflows/ci.yml)
+[![Docs](https://pkg.go.dev/badge/maragu.dev/glue)](https://pkg.go.dev/maragu.dev/glue)
+[![CI](https://github.com/maragudk/glue/actions/workflows/ci.yml/badge.svg)](https://github.com/maragudk/glue/actions/workflows/ci.yml)
 
 _glue_ is a collection of glue code that I often use in projects.
 
