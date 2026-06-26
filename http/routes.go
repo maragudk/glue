@@ -7,7 +7,7 @@ import (
 	"maragu.dev/httph"
 )
 
-// setupRoutes as well as middleware.
+// setupRoutes sets up routes as well as middleware.
 func (s *Server) setupRoutes() {
 	r := s.r
 
