@@ -12,7 +12,9 @@ func (s *Server) setupRoutes() {
 	r := s.r
 
 	r.Use(middleware.Compress(5))
-	r.Use(middleware.RealIP)
+	// Kept despite deprecation to preserve the [http.Request.RemoteAddr] rewriting behavior.
+	// Switching to the ClientIP* middlewares requires choosing a proxy trust model first.
+	r.Use(middleware.RealIP) //nolint:staticcheck
 	r.Use(OpenTelemetry)
 
 	protection := http.NewCrossOriginProtection()
