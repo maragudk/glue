@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -341,9 +342,16 @@ func (h *Helper) queryTracerStart(ctx context.Context, operation, query string, 
 	return h.tracer.Start(ctx, operation, allOpts...)
 }
 
-// normalizeQuery by removing excessive whitespace and truncating long queries.
+// placeholderRunMatcher matches runs of two or more comma-separated query placeholders,
+// in both question mark (`?, ?, ?`) and dollar (`$1, $2, $3`) styles.
+var placeholderRunMatcher = regexp.MustCompile(`(\?|\$\d+)(\s*,\s*(?:\?|\$\d+))+`)
+
+// normalizeQuery by removing excessive whitespace, collapsing placeholder runs
+// (typically from `in` clause expansion, see [Helper.In]) into their first placeholder,
+// and truncating long queries.
 func normalizeQuery(query string) string {
 	normalized := strings.Join(strings.Fields(query), " ")
+	normalized = placeholderRunMatcher.ReplaceAllString(normalized, "$1")
 
 	const maxLength = 1000
 	if len(normalized) > maxLength {
