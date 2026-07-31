@@ -259,6 +259,17 @@ func (h *Helper) Exec(ctx context.Context, query string, args ...any) error {
 	return nil
 }
 
+// In expands slice arguments bound to `in (?)` clauses into one placeholder per element,
+// rebinding placeholders to the connected database's style, and returning the rewritten query
+// along with the flattened argument list. See [sqlx.In].
+func (h *Helper) In(query string, args ...any) (string, []any, error) {
+	query, args, err := sqlx.In(query, args...)
+	if err != nil {
+		return "", nil, err
+	}
+	return h.DB.Rebind(query), args, nil
+}
+
 type Tx struct {
 	Tx               *sqlx.Tx
 	queryTracerStart func(context.Context, string, string, ...trace.SpanStartOption) (context.Context, trace.Span)
@@ -303,6 +314,17 @@ func (t *Tx) Exec(ctx context.Context, query string, args ...any) error {
 	}
 
 	return nil
+}
+
+// In expands slice arguments bound to `in (?)` clauses into one placeholder per element,
+// rebinding placeholders to the connected database's style, and returning the rewritten query
+// along with the flattened argument list. See [sqlx.In].
+func (t *Tx) In(query string, args ...any) (string, []any, error) {
+	query, args, err := sqlx.In(query, args...)
+	if err != nil {
+		return "", nil, err
+	}
+	return t.Tx.Rebind(query), args, nil
 }
 
 var ErrNoRows = sql.ErrNoRows
