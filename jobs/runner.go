@@ -78,22 +78,42 @@ type tracedMessage struct {
 	TraceContext map[string]string
 }
 
+// unwrapTracedMessage from the given bytes, also reporting whether they were an envelope at all.
+// A job payload is arbitrary JSON which may well have a body of its own, so both envelope fields
+// must be there: a non-empty body, and a trace context object, which is empty when nothing was
+// propagated at enqueue time. Anything else is a payload in its own right.
+func unwrapTracedMessage(m []byte) (tracedMessage, bool) {
+	var tracedM tracedMessage
+	if err := json.Unmarshal(m, &tracedM); err != nil {
+		return tracedMessage{}, false
+	}
+
+	// A missing or null trace context leaves the map nil, an empty one doesn't
+	if len(tracedM.Body) == 0 || tracedM.TraceContext == nil {
+		return tracedMessage{}, false
+	}
+
+	return tracedM, true
+}
+
 // WithTracing wraps a [Func] with OpenTelemetry tracing and trace context propagation.
-// It extracts trace context from tracedMessage if present and creates a span with proper
-// parent-child relationships. The wrapped function receives the raw payload bytes.
+// It unwraps the [tracedMessage] envelope if there is one, and extracts trace context from it if
+// the envelope carries any, so the span becomes a child of the span which created the job.
+// Payloads which aren't wrapped in an envelope are passed through untouched.
+// The wrapped function receives the raw payload bytes in both cases.
 func WithTracing(operationName string, fn Func) Func {
 	tracer := otel.Tracer("maragu.dev/glue/jobs")
 
 	return func(ctx context.Context, m []byte) error {
-		// Try to unmarshal as tracedMessage first to extract trace context
-		var tracedM tracedMessage
-		if err := json.Unmarshal(m, &tracedM); err == nil && len(tracedM.Body) > 0 && len(tracedM.TraceContext) > 0 {
-			// Extract trace context
-			propagator := otel.GetTextMapPropagator()
-			ctx = propagator.Extract(ctx, propagation.MapCarrier(tracedM.TraceContext))
-
-			// Use the wrapped payload
+		if tracedM, ok := unwrapTracedMessage(m); ok {
 			m = tracedM.Body
+
+			// The envelope has no trace context if there was nothing to propagate on enqueue,
+			// either because there was no propagator configured, or no span to inherit from
+			if len(tracedM.TraceContext) > 0 {
+				propagator := otel.GetTextMapPropagator()
+				ctx = propagator.Extract(ctx, propagation.MapCarrier(tracedM.TraceContext))
+			}
 		}
 
 		ctx, span := tracer.Start(ctx, operationName,

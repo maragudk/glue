@@ -19,6 +19,12 @@ type TestPayload struct {
 	Value   int    `json:"value"`
 }
 
+// testTracedMessage mirrors the envelope which the jobs package wraps payloads in on enqueue.
+type testTracedMessage struct {
+	Body         json.RawMessage
+	TraceContext map[string]string
+}
+
 func TestWithTracing(t *testing.T) {
 	// Set up a tracer provider that creates valid spans
 	tp := sdktrace.NewTracerProvider()
@@ -46,11 +52,6 @@ func TestWithTracing(t *testing.T) {
 
 		body, err := json.Marshal(payload)
 		is.NotError(t, err)
-
-		type testTracedMessage struct {
-			Body         json.RawMessage
-			TraceContext map[string]string
-		}
 
 		tracedPayload := testTracedMessage{
 			Body:         json.RawMessage(body),
@@ -120,4 +121,80 @@ func TestWithTracing(t *testing.T) {
 		span := trace.SpanFromContext(receivedCtx)
 		is.True(t, span.SpanContext().IsValid())
 	})
+
+	t.Run("should handle tracedMessage with an empty trace context", func(t *testing.T) {
+		// This is the envelope Create produces when no propagator is configured: the noop
+		// propagator injects nothing, so the carrier is marshaled as an empty object.
+		payload := TestPayload{
+			Message: "the propagator was on holiday",
+			Value:   1234,
+		}
+
+		body, err := json.Marshal(payload)
+		is.NotError(t, err)
+
+		tracedBody, err := json.Marshal(testTracedMessage{
+			Body:         json.RawMessage(body),
+			TraceContext: map[string]string{},
+		})
+		is.NotError(t, err)
+
+		var receivedCtx context.Context
+		var receivedM []byte
+		handler := jobs.WithTracing("test-operation", func(ctx context.Context, m []byte) error {
+			receivedCtx = ctx
+			receivedM = m
+			return nil
+		})
+
+		err = handler(t.Context(), tracedBody)
+		is.NotError(t, err)
+
+		// Verify the handler got the payload itself and not the envelope around it
+		is.Equal(t, string(body), string(receivedM))
+
+		var unmarshaled TestPayload
+		err = json.Unmarshal(receivedM, &unmarshaled)
+		is.NotError(t, err)
+		is.Equal(t, "the propagator was on holiday", unmarshaled.Message)
+		is.Equal(t, 1234, unmarshaled.Value)
+
+		// Verify the job is still traced, even with no parent span to inherit from
+		span := trace.SpanFromContext(receivedCtx)
+		is.True(t, span.SpanContext().IsValid())
+	})
+
+	t.Run("should handle payload with a body field of its own", func(t *testing.T) {
+		// A payload is free to have a body of its own, which mustn't be mistaken for an envelope
+		type emailPayload struct {
+			Body    string
+			Subject string
+		}
+
+		payload := emailPayload{
+			Body:    "Per my last email, please see my last email.",
+			Subject: "Re: Re: Re: quick question",
+		}
+
+		body, err := json.Marshal(payload)
+		is.NotError(t, err)
+
+		var receivedM []byte
+		handler := jobs.WithTracing("test-operation", func(ctx context.Context, m []byte) error {
+			receivedM = m
+			return nil
+		})
+
+		err = handler(t.Context(), body)
+		is.NotError(t, err)
+
+		is.Equal(t, string(body), string(receivedM))
+
+		var unmarshaled emailPayload
+		err = json.Unmarshal(receivedM, &unmarshaled)
+		is.NotError(t, err)
+		is.Equal(t, "Per my last email, please see my last email.", unmarshaled.Body)
+		is.Equal(t, "Re: Re: Re: quick question", unmarshaled.Subject)
+	})
+
 }
