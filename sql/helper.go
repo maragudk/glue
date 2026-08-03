@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jmoiron/sqlx"
 	"go.opentelemetry.io/otel"
@@ -259,6 +261,17 @@ func (h *Helper) Exec(ctx context.Context, query string, args ...any) error {
 	return nil
 }
 
+// In expands slice arguments bound to `in (?)` clauses into one placeholder per element,
+// rebinding placeholders to the connected database's style, and returning the rewritten query
+// along with the flattened argument list. See [sqlx.In].
+func (h *Helper) In(query string, args ...any) (string, []any, error) {
+	query, args, err := sqlx.In(query, args...)
+	if err != nil {
+		return "", nil, err
+	}
+	return h.DB.Rebind(query), args, nil
+}
+
 type Tx struct {
 	Tx               *sqlx.Tx
 	queryTracerStart func(context.Context, string, string, ...trace.SpanStartOption) (context.Context, trace.Span)
@@ -305,6 +318,17 @@ func (t *Tx) Exec(ctx context.Context, query string, args ...any) error {
 	return nil
 }
 
+// In expands slice arguments bound to `in (?)` clauses into one placeholder per element,
+// rebinding placeholders to the connected database's style, and returning the rewritten query
+// along with the flattened argument list. See [sqlx.In].
+func (t *Tx) In(query string, args ...any) (string, []any, error) {
+	query, args, err := sqlx.In(query, args...)
+	if err != nil {
+		return "", nil, err
+	}
+	return t.Tx.Rebind(query), args, nil
+}
+
 var ErrNoRows = sql.ErrNoRows
 
 func (h *Helper) queryTracerStart(ctx context.Context, operation, query string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
@@ -319,13 +343,26 @@ func (h *Helper) queryTracerStart(ctx context.Context, operation, query string, 
 	return h.tracer.Start(ctx, operation, allOpts...)
 }
 
-// normalizeQuery by removing excessive whitespace and truncating long queries.
+// placeholderRunMatcher matches single-quoted string literals (with `”` escapes), or runs of two or more
+// comma-separated query placeholders in both question mark (`?, ?, ?`) and dollar (`$1, $2, $3`) styles.
+// Literals capture into group 1 and runs capture their first placeholder into group 2, so replacing with
+// `$1$2` keeps literals as-is and collapses runs, without ever collapsing inside a literal.
+var placeholderRunMatcher = regexp.MustCompile(`('(?:[^']|'')*')|(\?|\$\d+)(?:\s*,\s*(?:\?|\$\d+))+`)
+
+// normalizeQuery by removing excessive whitespace, collapsing placeholder runs
+// (typically from `in` clause expansion, see [Helper.In]) into their first placeholder
+// while leaving string literals untouched, and truncating long queries at a rune boundary.
 func normalizeQuery(query string) string {
 	normalized := strings.Join(strings.Fields(query), " ")
+	normalized = placeholderRunMatcher.ReplaceAllString(normalized, "$1$2")
 
 	const maxLength = 1000
 	if len(normalized) > maxLength {
-		return normalized[:maxLength] + "…"
+		cut := maxLength
+		for cut > 0 && !utf8.RuneStart(normalized[cut]) {
+			cut--
+		}
+		return normalized[:cut] + "…"
 	}
 
 	return normalized

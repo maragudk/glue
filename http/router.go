@@ -219,6 +219,10 @@ func (t *TracingMux) Put(pattern string, h http.HandlerFunc) {
 	t.mux.Put(pattern, t.wrapHandlerFunc(h))
 }
 
+func (t *TracingMux) Query(pattern string, h http.HandlerFunc) {
+	t.mux.Query(pattern, t.wrapHandlerFunc(h))
+}
+
 func (t *TracingMux) Trace(pattern string, h http.HandlerFunc) {
 	t.mux.Trace(pattern, t.wrapHandlerFunc(h))
 }
