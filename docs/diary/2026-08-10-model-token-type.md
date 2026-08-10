@@ -201,3 +201,51 @@ The value string. `"token used"` follows the lowercase-phrase pattern of its nei
 ### Future work
 
 None. This was the follow-up flagged in Step 1, and it is now done.
+
+## Step 5: Rephrase the `Token` doc comment so single use reads as intent
+
+**Author:** token-builder
+
+### Prompt Context
+
+**Verbatim prompt:** In answer to the overclaiming question raised in Steps 2 and 3: "you're right that it overclaims — single use is what applications enforce, not what the type guarantees. Rephrase the opening sentence so single-use reads as intended use rather than enforced property, e.g. 'Token is an unguessable credential for single-use flows such as magic-link login.' (Naming magic-link login generically is fine — the public issue does.) Fold this into the commit below or amend as you see fit, but keep fa81d2e's message accurate."
+**Interpretation:** Change the first line of the `Token` doc comment so it describes the flows the credential is built for, instead of asserting a property the type does not enforce.
+**Inferred intent:** A doc comment that a reader cannot mistake for a guarantee, so nobody assumes the type is doing spend-tracking on their behalf.
+
+### What I did
+
+Rewrote the opening line of the `Token` comment in `/model/token.go` from "Token is an unguessable single-use credential" to "Token is an unguessable credential for single-use flows such as magic-link login", using the suggested wording as given.
+
+Also extended the comment's last line from "See [ErrorTokenExpired] and [ErrorTokenNotFound]" to include `[ErrorTokenUsed]`, which did not exist when that line was written in Step 2. This was not requested, but leaving the newest token sentinel out of the list would have made the comment quietly incomplete the moment Step 4 landed, and `ErrorTokenUsed` is the sentinel that most directly corroborates the "single-use flows" phrasing in the new opening line.
+
+`gofmt -l model/`, `go vet ./model/...` and `go test -shuffle=on ./model/...` are clean, and `go doc ./model Token` confirms the paragraph reads correctly and that all three sentinel links resolve.
+
+Committed as a third commit rather than folding the change into either existing one. The prompt allowed amending, but both alternatives are worse. Amending fa81d2e would rewrite the commit that carries diary Steps 2 and 3, whose "What was tricky" and "What warrants review" sections describe the old wording as an open question — the amended commit would contain a diary flagging a concern its own code had already resolved. Folding it into the `ErrorTokenUsed` commit would put a `Token` doc change under a summary line about an error sentinel. A third commit leaves fa81d2e's message accurate, which was the stated constraint, and keeps each commit about one thing.
+
+### Why
+
+The distinction is a real one and not pedantry. Nothing in `/model/token.go` tracks whether a token has been spent; that is a storage concern, and a comment asserting "single-use credential" invites a reader to assume otherwise. Describing the flow the credential is built for says the same useful thing without making a promise the code does not keep.
+
+### What worked
+
+Raising the question in Steps 2 and 3 instead of quietly writing what the brief said. The wording was specified in the original requirements, so the alternative was to implement it and say nothing — and the correction came back on the first round precisely because the concern was recorded where a reviewer would see it.
+
+### What didn't work
+
+Nothing failed. This was a two-line comment change and every check passed on the first run.
+
+### What I learned
+
+Naming a concrete flow can be more honest than an abstract adjective. "Single-use credential" reads as a property of the type; "credential for single-use flows" reads as the purpose it serves, and the second is both weaker as a claim and more informative to someone deciding whether they need this type.
+
+### What was tricky
+
+Only the commit-shape decision above, which came down to which artifact must stay truthful. Commit messages and diary entries are both historical records, so the option that avoided rewriting either one won.
+
+### What warrants review
+
+Whether "such as magic-link login" belongs in a library comment at all. The Go conventions say a package's comments should not look outward at its callers, and this names a concrete application-level flow. The lead approved it explicitly and the public issue uses the same phrasing, so it stands — but it is the one line in this file that a strict reading of that rule would question.
+
+### Future work
+
+None. All three items from the brief and both scope additions are done, and the branch is ready for review.

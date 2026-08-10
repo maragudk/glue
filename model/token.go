@@ -11,9 +11,9 @@ import (
 // Anchored at both ends, so a token with anything around it is not a token.
 var tokenMatcher = regexp.MustCompile(`^t_[0-9a-f]{32}$`)
 
-// Token is an unguessable single-use credential.
+// Token is an unguessable credential for single-use flows such as magic-link login.
 // It is a secret and nothing else: all tokens have the same shape, so what a token was minted for cannot be read off it.
-// See [ErrorTokenExpired] and [ErrorTokenNotFound] for the domain errors that concern tokens.
+// See [ErrorTokenExpired], [ErrorTokenNotFound] and [ErrorTokenUsed] for the domain errors that concern tokens.
 type Token string
 
 // NewToken from 16 bytes read with [rand.Read], hex-encoded behind a "t_" prefix.
