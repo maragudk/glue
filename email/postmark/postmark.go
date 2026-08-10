@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"html/template"
 	"io"
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net/http"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -36,7 +37,8 @@ const (
 	transactional
 )
 
-// nameAndEmail combo, of the form "Name <email@example.com>"
+// nameAndEmail combo, of the form "Name" <email@example.com>, where the name is either a quoted
+// string or an RFC 2047 encoded-word, and is left out entirely when empty.
 type nameAndEmail = string
 
 // Sender can send transactional and marketing emails through Postmark.
@@ -255,8 +257,34 @@ func (s *Sender) sendRequest(ctx context.Context, body requestBody) error {
 }
 
 // createNameAndEmail returns a name and email string ready for inserting into From and To fields.
+// A printable ASCII display name becomes an RFC 5322 quoted string, any other name an RFC 2047
+// encoded-word, and an empty name is left out entirely. No display name can end its own quoted
+// string or encoded-word, so none can turn a single address into several.
 func createNameAndEmail(name string, email model.EmailAddress) nameAndEmail {
-	return fmt.Sprintf("%v <%v>", name, email.ToLower())
+	address := mail.Address{Address: email.ToLower().String()}
+
+	// [mail.Address.String] reaches for Q-encoding for most names that need RFC 2047 encoding, and
+	// Q-encoding leaves a backslash bare, which makes the encoded-word unparseable. B-encoding has no
+	// such gap, so encode those names here and leave only the address to [mail.Address.String].
+	if needsEncodedWord(name) {
+		return mime.BEncoding.Encode("utf-8", name) + " " + address.String()
+	}
+
+	address.Name = name
+	return address.String()
+}
+
+// needsEncodedWord reports whether the display name has to become an RFC 2047 encoded-word because a
+// quoted string cannot carry it. The condition is the one [mime.WordEncoder.Encode] uses to decide
+// whether to encode at all: a name it would pass through unchanged must go down the quoting path
+// instead, or it would end up in the header raw and unquoted.
+func needsEncodedWord(name string) bool {
+	for _, r := range name {
+		if (r < ' ' || r > '~') && r != '\t' {
+			return true
+		}
+	}
+	return false
 }
 
 // getEmail from the given path, panicking on errors.
