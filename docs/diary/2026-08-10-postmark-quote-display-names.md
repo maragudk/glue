@@ -114,3 +114,57 @@ The predicate in `needsEncodedWord` at `/email/postmark/postmark.go` is the load
 ### Future work
 
 Validate the email address, not just the display name. This is the open half of the same hole and is written up in the message to the lead: decide between `model.EmailAddress.IsValid()` (already rejects all three payloads, but also rejects `a@localhost`, IDN, and address literals, so it is a behaviour change for consumers) and a narrower guard against `\r`, `\n`, `,`, `<`, and `>`. Separately, `SendMarketing` does not exist, leaving the `marketing` path dead code.
+
+## Step 3: Guard the address against restructuring the header
+
+**Author:** postmark-builder
+
+### Prompt Context
+
+**Verbatim prompt:** Decision from Markus: fold a NARROW guard into this branch. Not full validation — `model.EmailAddress.IsValid()` stays out of the sender; `a@localhost`, IDN, and address literals must keep working. [...] Property to enforce: a supplied address must not be able to alter header structure. Reject any address that could terminate the angle-addr, introduce a second address, or put raw control characters into the header [...] Reject, don't sanitize — silently rewriting an address risks delivering to the wrong mailbox [...] `createNameAndEmail` returns an error; `send` propagates it wrapped with context. `NewSender` panics on an invalid configured address.
+
+**Interpretation:** Close the address half of the injection hole from step 2 with a structural check only, not an address validator, and let bad configured addresses fail at construction.
+
+**Inferred intent:** Make the `To` header structurally safe end to end without narrowing which addresses the library will send to.
+
+### What I did
+
+Added `structuralRune` to `/email/postmark/postmark.go`, which returns the first rune of an address that would change the structure of the header: `<`, `>`, `,`, any C0 control, or DEL. `createNameAndEmail` now returns `(nameAndEmail, error)` and refuses such an address; `Sender.send` propagates the error wrapped as "error creating recipient", recording it on the span like the other failures in that function. `NewSender` builds its three addresses through a new `mustCreateNameAndEmail`, which panics with the name of the option that carried the bad address.
+
+In `/email/postmark/postmark_test.go`, added a table of eight rejected addresses covering all three original reproductions plus `<`, `,`, tab, and DEL, a table of five accepted addresses covering `you@localhost`, both address literal forms, an IDN, and a semicolon, and a table over the three configured options asserting the panic names the right one.
+
+Ran `go test -shuffle on -race -count=2 ./...` (green), `golangci-lint run` (0 issues), `make fmt`, and a second round of competing reviewers over the new code.
+
+### Why
+
+The scope was set deliberately narrow. `model.EmailAddress.IsValid()` would have rejected all three attacks, but it also rejects `a@localhost`, internationalised domains, and address literals, so using it would have quietly narrowed which addresses the library can send to. The guard instead asks one question — what would this address do to the header around it — and answers it the same way for every address.
+
+### What worked
+
+Mutation testing the new tests, prompted by a reviewer finding that the DEL branch was dead. Deleting `|| r == '\x7f'` left the whole suite green before I added a case for it; with the case, that mutation fails, and blanking the entire condition fails all eight rejection cases and all three panic cases cleanly. Extending the property check to addresses also paid: ~1.6M name/address pairs, every rune spliced into five positions in the address plus random strings over a hostile alphabet, asserting that an accepted address always renders to exactly one angle-addr at the end of the value with no delimiter or line break inside it. Zero failures, and all four address forms the brief protects still render.
+
+### What didn't work
+
+Nothing failed outright, but two reviewer findings showed the first draft was wrong in ways the tests did not catch.
+
+The first was a comment defect with teeth. `mustCreateNameAndEmail` was documented as panicking "because addresses configured on the sender are read once at startup, where a bad one should stop the program". Both reviewers flagged it as a package looking outward at its consumers, which `CLAUDE.md` forbids, and one pointed out it is false even inside this repo: `/email/postmarktest/helper.go` calls `NewSender` per test, from environment variables. The comment now says only what the function does, and the rationale lives here.
+
+The second was that `is.Equal(t, test.expected, err.Error())` dereferences `err` before anything checks it is non-nil. A reviewer demonstrated by mutation that a regressed guard made the first rejection case nil-panic, which aborts the test binary — so instead of eight failures naming what broke, you get one stack trace. Each case now asserts `err != nil` first.
+
+### What I learned
+
+`mail.Address.String()` quotes the local part of an address but copies the domain verbatim, and those two halves fail differently. In the domain, a delimiter reaches the header intact. In the local part, `quoteString` does not escape control characters — it drops them, so `a\r\nb@example.com` renders as `"ab"@example.com` and the mail goes to a mailbox nobody asked for. That is why the control check covers the whole address while the delimiters only matter in the domain, and it is the sharpest argument for rejecting rather than sanitising.
+
+Also: RFC 5322 group syntax is not reachable here. A semicolon cannot open a group because the display name is always followed immediately by an angle-addr, and any second address a payload tries to introduce gets pulled into the quoted local part, because `mail.Address.String()` splits on the *last* `@`. The semicolon case in the accepted table records that, so the next reader does not have to re-derive why `;` is safely out of the reject set.
+
+### What was tricky
+
+Knowing where to stop. The guard rejects `<`, `>`, and `,` across the whole address, which technically over-rejects RFC 5321-legal quoted local parts like `"very,unusual"@example.com` — `mail.Address.String()` would quote those safely. Narrowing the delimiter scan to the domain would be more precise, but it means splitting the address on the last `@` and reasoning about two rules instead of one, to buy support for addresses nobody in practice uses. I kept the single rule and said so in the doc comment rather than pretending the check is exact.
+
+### What warrants review
+
+`structuralRune` is deliberately not an address validator, and the doc comment says so; the risk over time is someone "completing" it into one and breaking `you@localhost` or IDN addresses, which the accepted table exists to prevent. Worth a look too: the address is still lowercased in full, including the local part, which RFC 5321 §2.4 leaves case-sensitive to the destination host, so `John.Doe@example.com` is delivered as `john.doe@example.com`. That is pre-existing and the brief asked to keep it, but it sits oddly next to a guard whose rationale is not silently changing which mailbox is addressed. It is visible in the accepted table, where `you@[IPv6:2001:db8::1]` renders with a lowercased `ipv6:` tag.
+
+### Future work
+
+Three things, none of them in scope here. Lowercasing could be narrowed to the domain, which would leave the local part as the sender gave it. `NewSender` panics on `MarketingEmailAddress` even though nothing can send marketing mail, since there is no `SendMarketing` — the dead `marketing` branch of `send` is worth either finishing or removing. And a consumer that builds a `Sender` from runtime configuration has no way to check an address before handing it over, since the check is unexported; exporting it would give them an alternative to `recover()`, but that is a public API change and was explicitly out of scope.

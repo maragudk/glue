@@ -72,56 +72,56 @@ func TestSender_SendTransactional(t *testing.T) {
 	})
 
 	tests := []struct {
-		name     string
-		to       string
-		expected string
+		name        string
+		displayName string
+		expected    string
 	}{
 		{
-			name:     "renders a plain ASCII name as a quoted string",
-			to:       "Markus",
-			expected: `"Markus" <you@example.com>`,
+			name:        "renders a plain ASCII name as a quoted string",
+			displayName: "Markus",
+			expected:    `"Markus" <you@example.com>`,
 		},
 		{
-			name:     "renders an empty name as just the address",
-			to:       "",
-			expected: `<you@example.com>`,
+			name:        "renders an empty name as just the address",
+			displayName: "",
+			expected:    `<you@example.com>`,
 		},
 		{
-			name:     "quotes a name containing a comma",
-			to:       "Doe, John",
-			expected: `"Doe, John" <you@example.com>`,
+			name:        "quotes a name containing a comma",
+			displayName: "Doe, John",
+			expected:    `"Doe, John" <you@example.com>`,
 		},
 		{
-			name:     "escapes double quotes and backslashes in a name",
-			to:       `Ba"ck\slash`,
-			expected: `"Ba\"ck\\slash" <you@example.com>`,
+			name:        "escapes double quotes and backslashes in a name",
+			displayName: `Ba"ck\slash`,
+			expected:    `"Ba\"ck\\slash" <you@example.com>`,
 		},
 		{
-			name:     "quotes a name that tries to smuggle in a second recipient",
-			to:       `You, "Friend" <evil@example.com>`,
-			expected: `"You, \"Friend\" <evil@example.com>" <you@example.com>`,
+			name:        "quotes a name that tries to smuggle in a second recipient",
+			displayName: `You, "Friend" <evil@example.com>`,
+			expected:    `"You, \"Friend\" <evil@example.com>" <you@example.com>`,
 		},
 		{
-			name:     "quotes a name with a tab that tries to smuggle in a second recipient",
-			to:       "You\t<evil@example.com>",
-			expected: "\"You\t<evil@example.com>\" <you@example.com>",
+			name:        "quotes a name with a tab that tries to smuggle in a second recipient",
+			displayName: "You\t<evil@example.com>",
+			expected:    "\"You\t<evil@example.com>\" <you@example.com>",
 		},
 		{
 			// A line break in a name would otherwise end the header and let the rest of the name
 			// start one of its own. Encoding the name leaves no raw CRLF to break on.
-			name:     "encodes a name containing a line break, so it cannot start a header of its own",
-			to:       "You\r\nBcc: evil@example.com",
-			expected: `=?utf-8?b?WW91DQpCY2M6IGV2aWxAZXhhbXBsZS5jb20=?= <you@example.com>`,
+			name:        "encodes a name containing a line break, so it cannot start a header of its own",
+			displayName: "You\r\nBcc: evil@example.com",
+			expected:    `=?utf-8?b?WW91DQpCY2M6IGV2aWxAZXhhbXBsZS5jb20=?= <you@example.com>`,
 		},
 		{
-			name:     "encodes a non-ASCII name as an encoded-word",
-			to:       "Søren",
-			expected: `=?utf-8?b?U8O4cmVu?= <you@example.com>`,
+			name:        "encodes a non-ASCII name as an encoded-word",
+			displayName: "Søren",
+			expected:    `=?utf-8?b?U8O4cmVu?= <you@example.com>`,
 		},
 		{
-			name:     "encodes a non-ASCII name containing a backslash as an encoded-word",
-			to:       `Sø\ren`,
-			expected: `=?utf-8?b?U8O4XHJlbg==?= <you@example.com>`,
+			name:        "encodes a non-ASCII name containing a backslash as an encoded-word",
+			displayName: `Sø\ren`,
+			expected:    `=?utf-8?b?U8O4XHJlbg==?= <you@example.com>`,
 		},
 	}
 
@@ -129,7 +129,7 @@ func TestSender_SendTransactional(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			sender, rec := newSender(t, nil)
 
-			err := sender.SendTransactional(t.Context(), test.to, "you@example.com", "Hi", "Hey there.", "generic", model.Keywords{})
+			err := sender.SendTransactional(t.Context(), test.displayName, "you@example.com", "Hi", "Hey there.", "generic", model.Keywords{})
 			is.NotError(t, err)
 
 			to := rec.get().To
@@ -142,10 +142,178 @@ func TestSender_SendTransactional(t *testing.T) {
 			addresses, err := mail.ParseAddressList(to)
 			is.NotError(t, err)
 			is.Equal(t, 1, len(addresses))
-			is.Equal(t, test.to, addresses[0].Name)
+			is.Equal(t, test.displayName, addresses[0].Name)
 			is.Equal(t, "you@example.com", addresses[0].Address)
 		})
 	}
+
+	// The display name is quoted or encoded, but the address goes into the header as given, so an
+	// address that would restructure the header around it has to be refused outright. Rewriting it
+	// into something acceptable risks delivering to a mailbox nobody asked for.
+	rejected := []struct {
+		name     string
+		address  model.EmailAddress
+		expected string
+	}{
+		{
+			name:     "rejects an address that closes the angle-addr to append a second recipient",
+			address:  "you@example.com>, <evil@example.com",
+			expected: `error creating recipient: email address contains '>', which would change the structure of the header`,
+		},
+		{
+			name:     "rejects an address with a line break that would start a header of its own",
+			address:  "you@example.com\r\nBcc: evil@example.com",
+			expected: `error creating recipient: email address contains '\r', which would change the structure of the header`,
+		},
+		{
+			name:     "rejects an address with a blank line that would start the body",
+			address:  "you@example.com\r\n\r\nEvil body",
+			expected: `error creating recipient: email address contains '\r', which would change the structure of the header`,
+		},
+		{
+			name:     "rejects an address with a null byte, which would silently change the mailbox",
+			address:  "yo\x00u@example.com",
+			expected: `error creating recipient: email address contains '\x00', which would change the structure of the header`,
+		},
+		{
+			name:     "rejects an address with a delete, which would silently change the mailbox",
+			address:  "yo\x7fu@example.com",
+			expected: `error creating recipient: email address contains '\x7f', which would change the structure of the header`,
+		},
+		{
+			name:     "rejects an address opening a second angle-addr",
+			address:  "you@example.com <evil@example.com",
+			expected: `error creating recipient: email address contains '<', which would change the structure of the header`,
+		},
+		{
+			name:     "rejects an address separating a second recipient with a comma",
+			address:  "you@example.com,evil@example.com",
+			expected: `error creating recipient: email address contains ',', which would change the structure of the header`,
+		},
+		{
+			name:     "rejects an address with a tab",
+			address:  "you@example.com\tevil",
+			expected: `error creating recipient: email address contains '\t', which would change the structure of the header`,
+		},
+	}
+
+	for _, test := range rejected {
+		t.Run(test.name, func(t *testing.T) {
+			sender, rec := newSender(t, nil)
+
+			err := sender.SendTransactional(t.Context(), "You", test.address, "Hi", "Hey there.", "generic", model.Keywords{})
+			is.True(t, err != nil, "address was not rejected")
+			is.Equal(t, test.expected, err.Error())
+
+			// The address is refused before anything reaches Postmark.
+			is.Equal(t, 0, rec.requests())
+		})
+	}
+
+	// The check is narrow on purpose: it asks only what the address would do to the header around it,
+	// never whether the address is one Postmark can deliver to.
+	accepted := []struct {
+		name     string
+		address  model.EmailAddress
+		expected string
+	}{
+		{
+			name:     "accepts an address without a dotted domain",
+			address:  "you@localhost",
+			expected: `"You" <you@localhost>`,
+		},
+		{
+			name:     "accepts an IPv4 address literal",
+			address:  "you@[192.168.1.1]",
+			expected: `"You" <you@[192.168.1.1]>`,
+		},
+		{
+			// The address is lowercased, so the standardised IPv6 tag comes out as "ipv6".
+			name:     "accepts an IPv6 address literal, colons and all",
+			address:  "you@[IPv6:2001:db8::1]",
+			expected: `"You" <you@[ipv6:2001:db8::1]>`,
+		},
+		{
+			name:     "accepts an internationalised domain name",
+			address:  "you@例え.jp",
+			expected: `"You" <you@例え.jp>`,
+		},
+		{
+			// A semicolon ends a group in RFC 5322, but a display name is always followed by an
+			// angle-addr here, so there is no group for it to end, and any second address it tries to
+			// introduce is pulled into the quoted local part.
+			name:     "accepts a semicolon, which cannot open a group from inside the angle-addr",
+			address:  "you@example.com;evil@example.com",
+			expected: `"You" <"you@example.com;evil"@example.com>`,
+		},
+	}
+
+	for _, test := range accepted {
+		t.Run(test.name, func(t *testing.T) {
+			sender, rec := newSender(t, nil)
+
+			err := sender.SendTransactional(t.Context(), "You", test.address, "Hi", "Hey there.", "generic", model.Keywords{})
+			is.NotError(t, err)
+
+			to := rec.get().To
+			is.Equal(t, test.expected, to)
+
+			// An accepted address still has to leave the header with one address in it and no way to
+			// start another, even where a stricter parser would not accept the address itself.
+			is.True(t, !strings.ContainsAny(to, "\r\n"), "rendered value has a raw line break")
+			is.Equal(t, 1, strings.Count(to, "<"))
+			is.True(t, strings.HasSuffix(to, ">"), "rendered value does not end in an angle-addr")
+			is.True(t, !strings.ContainsAny(to[strings.LastIndex(to, "<"):], ","), "angle-addr can introduce another address")
+		})
+	}
+}
+
+func TestNewSender(t *testing.T) {
+	// Every configured address goes through the same check, and the panic has to say which one to fix.
+	options := []struct {
+		name     string
+		opts     postmark.NewSenderOptions
+		expected string
+	}{
+		{
+			name:     "names the marketing address in the panic",
+			opts:     postmark.NewSenderOptions{MarketingEmailAddress: "marketing@example.com,evil@example.com"},
+			expected: `error creating name and email for MarketingEmailAddress: email address contains ',', which would change the structure of the header`,
+		},
+		{
+			name:     "names the reply-to address in the panic",
+			opts:     postmark.NewSenderOptions{ReplyToEmailAddress: "support@example.com>, <evil@example.com"},
+			expected: `error creating name and email for ReplyToEmailAddress: email address contains '>', which would change the structure of the header`,
+		},
+		{
+			name:     "names the transactional address in the panic",
+			opts:     postmark.NewSenderOptions{TransactionalEmailAddress: "transactional@example.com\rBcc: evil@example.com"},
+			expected: `error creating name and email for TransactionalEmailAddress: email address contains '\r', which would change the structure of the header`,
+		},
+	}
+
+	for _, test := range options {
+		t.Run(test.name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				is.True(t, r != nil, "NewSender did not panic")
+
+				err, ok := r.(error)
+				is.True(t, ok, "panic value is not an error")
+				is.Equal(t, test.expected, err.Error())
+			}()
+
+			postmark.NewSender(test.opts)
+		})
+	}
+
+	t.Run("does not panic on ordinary configured email addresses", func(t *testing.T) {
+		postmark.NewSender(postmark.NewSenderOptions{
+			MarketingEmailAddress:     "marketing@example.com",
+			ReplyToEmailAddress:       "support@localhost",
+			TransactionalEmailAddress: "transactional@[192.168.1.1]",
+		})
+	})
 }
 
 // requestBody sent to the Postmark API.
@@ -160,22 +328,31 @@ type requestBody struct {
 	HtmlBody      string
 }
 
-// recorder of the request body received by the test server.
+// recorder of the request bodies received by the test server.
 type recorder struct {
-	mu   sync.Mutex
-	body requestBody
+	mu    sync.Mutex
+	body  requestBody
+	count int
 }
 
 func (r *recorder) set(body requestBody) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.body = body
+	r.count++
 }
 
 func (r *recorder) get() requestBody {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.body
+}
+
+// requests received so far.
+func (r *recorder) requests() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.count
 }
 
 // newSender backed by a test server which records the request body before delegating to the given
