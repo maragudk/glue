@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"html/template"
 	"io"
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net/http"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -36,7 +37,8 @@ const (
 	transactional
 )
 
-// nameAndEmail combo, of the form "Name <email@example.com>"
+// nameAndEmail combo, of the form "Name" <email@example.com>, where the name is either a quoted
+// string or an RFC 2047 encoded-word, and is left out entirely when empty.
 type nameAndEmail = string
 
 // Sender can send transactional and marketing emails through Postmark.
@@ -87,10 +89,10 @@ func NewSender(opts NewSenderOptions) *Sender {
 		endpointURL:       strings.TrimSuffix(opts.EndpointURL, "/"),
 		key:               opts.Key,
 		log:               opts.Log,
-		marketingFrom:     createNameAndEmail(opts.MarketingEmailName, opts.MarketingEmailAddress),
-		replyTo:           createNameAndEmail(opts.ReplyToEmailName, opts.ReplyToEmailAddress),
+		marketingFrom:     mustCreateNameAndEmail("MarketingEmailAddress", opts.MarketingEmailName, opts.MarketingEmailAddress),
+		replyTo:           mustCreateNameAndEmail("ReplyToEmailAddress", opts.ReplyToEmailName, opts.ReplyToEmailAddress),
 		tracer:            otel.Tracer("maragu.dev/glue/email/postmark"),
-		transactionalFrom: createNameAndEmail(opts.TransactionalEmailName, opts.TransactionalEmailAddress),
+		transactionalFrom: mustCreateNameAndEmail("TransactionalEmailAddress", opts.TransactionalEmailName, opts.TransactionalEmailAddress),
 	}
 }
 
@@ -138,16 +140,23 @@ func (s *Sender) send(ctx context.Context, typ emailType, name string, email mod
 		messageStream = transactionalMessageStream
 	}
 
+	to, err := createNameAndEmail(name, email)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "invalid recipient")
+		return errors.Wrap(err, "error creating recipient")
+	}
+
 	// Keywords that are always included
 	keywords["appName"] = s.appName
 	keywords["baseURL"] = s.baseURL
 	keywords["name"] = name
 
-	err := s.sendRequest(ctx, requestBody{
+	err = s.sendRequest(ctx, requestBody{
 		MessageStream: messageStream,
 		From:          from,
 		ReplyTo:       s.replyTo,
-		To:            createNameAndEmail(name, email),
+		To:            to,
 		Subject:       subject,
 		HtmlBody:      getEmail(s.emails, template, preheader, keywords),
 	})
@@ -254,9 +263,69 @@ func (s *Sender) sendRequest(ctx context.Context, body requestBody) error {
 	return nil
 }
 
-// createNameAndEmail returns a name and email string ready for inserting into From and To fields.
-func createNameAndEmail(name string, email model.EmailAddress) nameAndEmail {
-	return fmt.Sprintf("%v <%v>", name, email.ToLower())
+// createNameAndEmail returns a name and email string ready for inserting into From and To fields, and
+// an error if [structuralRune] finds a character in the address that would change the structure of
+// the header. The address is lowercased and trimmed of surrounding whitespace first.
+// A printable ASCII display name becomes an RFC 5322 quoted string, any other name an RFC 2047
+// encoded-word, and an empty name is left out entirely, so no display name can end its own quoted
+// string or encoded-word. Between that and the check on the address, neither part can turn one
+// address into several or end the header line. Nothing here checks that the address is deliverable
+// or even well-formed, and an address that passes is used exactly as given.
+func createNameAndEmail(name string, email model.EmailAddress) (nameAndEmail, error) {
+	address := mail.Address{Address: email.ToLower().String()}
+
+	if r, found := structuralRune(address.Address); found {
+		return "", errors.Newf("email address contains %q, which would change the structure of the header", r)
+	}
+
+	// [mail.Address.String] reaches for Q-encoding for most names that need RFC 2047 encoding, and
+	// Q-encoding leaves a backslash bare, which makes the encoded-word unparseable. B-encoding has no
+	// such gap, so encode those names here and leave only the address to [mail.Address.String].
+	if needsEncodedWord(name) {
+		return mime.BEncoding.Encode("utf-8", name) + " " + address.String(), nil
+	}
+
+	address.Name = name
+	return address.String(), nil
+}
+
+// mustCreateNameAndEmail as [createNameAndEmail], panicking instead of returning an error, and naming
+// the option the address came from so the panic says which one to fix.
+func mustCreateNameAndEmail(option, name string, email model.EmailAddress) nameAndEmail {
+	combo, err := createNameAndEmail(name, email)
+	if err != nil {
+		panic(errors.Wrap(err, "error creating name and email for %v", option))
+	}
+	return combo
+}
+
+// structuralRune returns the first rune of the email address that would change the structure of the
+// header it goes into, and whether there was one. Angle brackets and the comma delimit addresses, and
+// [mail.Address.String] copies the domain of an address into the header verbatim, so one placed there
+// would end the address, start another, or split it in two. Control characters are refused across the
+// whole address for two reasons: a carriage return or line feed in the domain would end the header
+// line, and [mail.Address.String] quotes the local part without escaping controls, dropping them
+// instead, which would send the mail to a different mailbox than the one asked for.
+func structuralRune(email string) (rune, bool) {
+	for _, r := range email {
+		if r == '<' || r == '>' || r == ',' || r < ' ' || r == '\x7f' {
+			return r, true
+		}
+	}
+	return 0, false
+}
+
+// needsEncodedWord reports whether the display name has to become an RFC 2047 encoded-word because a
+// quoted string cannot carry it. The condition is the one [mime.WordEncoder.Encode] uses to decide
+// whether to encode at all: a name it would pass through unchanged must go down the quoting path
+// instead, or it would end up in the header raw and unquoted.
+func needsEncodedWord(name string) bool {
+	for _, r := range name {
+		if (r < ' ' || r > '~') && r != '\t' {
+			return true
+		}
+	}
+	return false
 }
 
 // getEmail from the given path, panicking on errors.
