@@ -7,6 +7,7 @@ const (
 	ErrorEmailConflict = Error("email conflict")
 	ErrorTokenExpired  = Error("token expired")
 	ErrorTokenNotFound = Error("token not found")
+	ErrorTokenUsed     = Error("token used")
 	ErrorUserInactive  = Error("user inactive")
 	ErrorUserNotFound  = Error("user not found")
 )

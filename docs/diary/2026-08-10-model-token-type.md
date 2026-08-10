@@ -155,3 +155,49 @@ The `Token` type comment, as flagged in Step 2: "unguessable single-use credenti
 ### Future work
 
 None. The `ErrorTokenUsed` sentinel from Step 1 remains the only follow-up, and it stays out of this branch.
+
+## Step 4: Add the `ErrorTokenUsed` sentinel
+
+**Author:** token-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Scope addition from the user (product owner), approved for this branch: also add an `ErrorTokenUsed` sentinel to `model/error.go`." The requirements that followed: the value is `Error("token used")`, "follows the existing lowercase-phrase pattern"; it keeps "the const block's alphabetical order: it goes after `ErrorTokenNotFound`"; the rationale is that "single-use token flows distinguish 'already used' from 'no such token' — they are different things to whoever is holding the link"; and it lands as "a SECOND, separate commit (it goes beyond what issue #181 specifies)" ending in `See #181` rather than `Fixes`. Everything else in the original brief still stands, including not pushing and not opening a pull request.
+**Interpretation:** One line in `/model/error.go`, in its alphabetical slot, plus its own commit and this diary step.
+**Inferred intent:** Close the gap the previous steps left open: `Token` can now be minted and validated, but the error vocabulary could not yet say that a well-formed, real token has already been spent.
+
+### What I did
+
+Added `ErrorTokenUsed = Error("token used")` to the const block in `/model/error.go`, between `ErrorTokenNotFound` and `ErrorUserInactive`. Left it without a doc comment, matching the other five sentinels — the block is introduced once by the comment on the `Error` type, and commenting only the newest constant would break that symmetry.
+
+Confirmed the placement is genuinely alphabetical rather than merely plausible: `ErrorTokenNotFound` sorts before `ErrorTokenUsed` because `N` precedes `U`, and `ErrorTokenUsed` sorts before `ErrorUserInactive` because `Token` precedes `User`.
+
+`gofmt -l model/`, `go vet ./model/...` and `go test -shuffle=on ./model/...` are all clean, and `git diff model/error.go` is a single added line: `ErrorEmailConflict` and `ErrorTokenNotFound` are both 18 characters and still set the alignment column, so the new constant padded to the existing width without moving any neighbouring line.
+
+### Why
+
+The `Token` work gave applications a credential they can mint and check the shape of, but the domain vocabulary stopped at expired and not-found. A single-use credential has a third terminal state — spent — and collapsing it into "not found" throws away the distinction between a link that never existed and one that already did its job.
+
+### What worked
+
+Checking the rendered diff rather than assuming gofmt would behave. The new name is shorter than the longest in the block, which is the case where alignment stays put; had it been longer, every line in the const block would have shifted and the one-line change would have become a six-line diff worth warning a reviewer about.
+
+### What didn't work
+
+Nothing failed. This was a one-line addition and every check passed on the first run.
+
+### What I learned
+
+Nothing new about Go here. The only thing worth recording is a review habit: in an aligned const block, whether a change is one line or the whole block depends entirely on how the new identifier's length compares to the current longest, so it is worth looking at the diff before describing the change to anyone.
+
+### What was tricky
+
+Only the judgement call about a doc comment. The rationale for this sentinel is more interesting than for its neighbours, which is a pull toward documenting it — but a comment on exactly one constant in an otherwise bare block reads as though the others are self-evident and this one is not. The rationale went into the commit message and this diary entry instead, where it does not distort the source.
+
+### What warrants review
+
+The value string. `"token used"` follows the lowercase-phrase pattern of its neighbours, but reads as a fragment rather than a state; `"token already used"` would be more precise at the cost of being longer than the pattern suggests. Worth a moment's thought before it becomes part of the public API.
+
+### Future work
+
+None. This was the follow-up flagged in Step 1, and it is now done.
