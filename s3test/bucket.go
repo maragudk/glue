@@ -48,18 +48,22 @@ func NewBucket(t *testing.T) *s3.Bucket {
 func cleanupBucket(t *testing.T, client *awss3.Client, bucket string) {
 	t.Helper()
 
-	listObjectsOutput, err := client.ListObjects(context.WithoutCancel(t.Context()), &awss3.ListObjectsInput{Bucket: &bucket})
-	if err != nil {
-		t.Fatal(err)
-	}
+	paginator := awss3.NewListObjectsV2Paginator(client, &awss3.ListObjectsV2Input{Bucket: &bucket})
 
-	for _, o := range listObjectsOutput.Contents {
-		_, err := client.DeleteObject(context.WithoutCancel(t.Context()), &awss3.DeleteObjectInput{
-			Bucket: &bucket,
-			Key:    o.Key,
-		})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(context.WithoutCancel(t.Context()))
 		if err != nil {
 			t.Fatal(err)
+		}
+
+		for _, o := range page.Contents {
+			_, err := client.DeleteObject(context.WithoutCancel(t.Context()), &awss3.DeleteObjectInput{
+				Bucket: &bucket,
+				Key:    o.Key,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 
