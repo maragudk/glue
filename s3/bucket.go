@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"iter"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -149,27 +150,51 @@ func (b *Bucket) GetPresignedURL(ctx context.Context, key string, expires time.D
 	return req.URL, nil
 }
 
-func (b *Bucket) List(ctx context.Context, prefix string, maxKeys int) ([]string, error) {
-	ctx, span := b.operationTracerStart(ctx, "s3.list", prefix)
-	defer span.End()
+// List keys under prefix in ascending lexical order.
+// The returned iterator fetches pages from S3 lazily as it is consumed, one API call per page of up to 1,000 keys,
+// so constructing it without ranging over it calls no S3 API.
+// If fetching a page fails, the iterator yields an empty key and the error once, and then stops.
+func (b *Bucket) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		ctx, span := b.operationTracerStart(ctx, "s3.list", prefix)
+		defer span.End()
 
-	listObjectsOutput, err := b.Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-		Bucket:  &b.name,
-		MaxKeys: aws.Int32(int32(maxKeys)),
-		Prefix:  &prefix,
-	})
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "list failed")
-		return nil, err
+		paginator := s3.NewListObjectsV2Paginator(b.Client, &s3.ListObjectsV2Input{
+			Bucket: &b.name,
+			Prefix: &prefix,
+		})
+
+		for paginator.HasMorePages() {
+			page, err := paginator.NextPage(ctx)
+			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "list failed")
+				yield("", err)
+				return
+			}
+
+			for _, object := range page.Contents {
+				if !yield(*object.Key, nil) {
+					return
+				}
+			}
+		}
 	}
+}
 
-	var keys []string
-	for _, object := range listObjectsOutput.Contents {
-		keys = append(keys, *object.Key)
+// LastKey under prefix, in the ascending lexical order of [Bucket.List].
+// If there are no keys under prefix, returns an empty string and no error.
+// S3 cannot list in reverse, so this drains [Bucket.List] through all keys under prefix,
+// at a cost of one API call per page of up to 1,000 keys.
+func (b *Bucket) LastKey(ctx context.Context, prefix string) (string, error) {
+	var lastKey string
+	for key, err := range b.List(ctx, prefix) {
+		if err != nil {
+			return "", err
+		}
+		lastKey = key
 	}
-
-	return keys, nil
+	return lastKey, nil
 }
 
 func (b *Bucket) operationTracerStart(ctx context.Context, operation, key string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
