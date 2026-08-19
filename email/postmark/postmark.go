@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"mime"
 	"net/http"
 	"net/mail"
@@ -96,8 +97,11 @@ func NewSender(opts NewSenderOptions) *Sender {
 	}
 }
 
-func (s *Sender) SendTransactional(ctx context.Context, name string, email model.EmailAddress, subject, preheader, template string, kw model.Keywords) error {
-	return s.send(ctx, transactional, name, email, subject, preheader, template, kw)
+// SendTransactional email on the transactional message stream.
+// An empty ReplyTo in the options falls back to ReplyToEmailAddress in [NewSenderOptions], and with
+// neither of them the email goes out with no reply-to, so replies go to the from address.
+func (s *Sender) SendTransactional(ctx context.Context, opts email.SendOptions) error {
+	return s.send(ctx, transactional, opts)
 }
 
 // requestBody used in [Sender.send].
@@ -106,13 +110,13 @@ type requestBody struct {
 	MessageStream string
 	From          nameAndEmail
 	To            nameAndEmail
-	ReplyTo       nameAndEmail
+	ReplyTo       nameAndEmail `json:",omitempty"`
 	Subject       string
 	TextBody      string
 	HtmlBody      string
 }
 
-func (s *Sender) send(ctx context.Context, typ emailType, name string, email model.EmailAddress, subject, preheader, template string, keywords model.Keywords) error {
+func (s *Sender) send(ctx context.Context, typ emailType, opts email.SendOptions) error {
 	var emailTypeStr string
 	switch typ {
 	case marketing:
@@ -124,7 +128,7 @@ func (s *Sender) send(ctx context.Context, typ emailType, name string, email mod
 	ctx, span := s.operationTracerStart(ctx, "postmark.send",
 		trace.WithAttributes(
 			attribute.String("email.type", emailTypeStr),
-			attribute.String("email.template", template),
+			attribute.String("email.template", opts.Template),
 		),
 	)
 	defer span.End()
@@ -140,25 +144,50 @@ func (s *Sender) send(ctx context.Context, typ emailType, name string, email mod
 		messageStream = transactionalMessageStream
 	}
 
-	to, err := createNameAndEmail(name, email)
+	if opts.Template == "" {
+		err := errors.New("no email template given")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "no template")
+		return err
+	}
+
+	to, err := createNameAndEmail(opts.ToName, opts.To)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "invalid recipient")
 		return errors.Wrap(err, "error creating recipient")
 	}
+	if to == "" {
+		err := errors.New("no recipient email address given")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "no recipient")
+		return err
+	}
 
-	// Keywords that are always included
+	replyTo, err := createNameAndEmail(opts.ReplyToName, opts.ReplyTo)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "invalid reply-to")
+		return errors.Wrap(err, "error creating reply-to")
+	}
+	if replyTo == "" {
+		replyTo = s.replyTo
+	}
+
+	// Copied, so the always-included keywords below stay out of the given map.
+	keywords := model.Keywords{}
+	maps.Copy(keywords, opts.Keywords)
 	keywords["appName"] = s.appName
 	keywords["baseURL"] = s.baseURL
-	keywords["name"] = name
+	keywords["name"] = opts.ToName
 
 	err = s.sendRequest(ctx, requestBody{
 		MessageStream: messageStream,
 		From:          from,
-		ReplyTo:       s.replyTo,
+		ReplyTo:       replyTo,
 		To:            to,
-		Subject:       subject,
-		HtmlBody:      getEmail(s.emails, template, preheader, keywords),
+		Subject:       opts.Subject,
+		HtmlBody:      getEmail(s.emails, opts.Template, opts.Preheader, keywords),
 	})
 	if err != nil {
 		span.RecordError(err)
@@ -263,9 +292,12 @@ func (s *Sender) sendRequest(ctx context.Context, body requestBody) error {
 	return nil
 }
 
-// createNameAndEmail returns a name and email string ready for inserting into From and To fields, and
-// an error if [structuralRune] finds a character in the address that would change the structure of
-// the header. The address is lowercased and trimmed of surrounding whitespace first.
+// createNameAndEmail returns a name and email string ready for inserting into From, To, and ReplyTo
+// fields, and an error if [structuralRune] finds a character in the address that would change the
+// structure of the header. The address is lowercased and trimmed of surrounding whitespace first.
+// An address that is empty by then gives an empty combo, for a field to leave out, unless a display
+// name came with it: a name addresses nobody on its own, and answering it with some other address is
+// worse than refusing it.
 // A printable ASCII display name becomes an RFC 5322 quoted string, any other name an RFC 2047
 // encoded-word, and an empty name is left out entirely, so no display name can end its own quoted
 // string or encoded-word. Between that and the check on the address, neither part can turn one
@@ -273,6 +305,13 @@ func (s *Sender) sendRequest(ctx context.Context, body requestBody) error {
 // or even well-formed, and an address that passes is used exactly as given.
 func createNameAndEmail(name string, email model.EmailAddress) (nameAndEmail, error) {
 	address := mail.Address{Address: email.ToLower().String()}
+
+	if address.Address == "" {
+		if name != "" {
+			return "", errors.Newf("display name %q came without an email address", name)
+		}
+		return "", nil
+	}
 
 	if r, found := structuralRune(address.Address); found {
 		return "", errors.Newf("email address contains %q, which would change the structure of the header", r)
