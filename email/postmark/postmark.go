@@ -330,6 +330,9 @@ func needsEncodedWord(name string) bool {
 
 // getEmail from the given path, panicking on errors.
 // It also replaces keywords given in the map.
+// The preheader and the keywords are text, and are HTML-escaped where they go into the email, so
+// neither can bring markup of its own into it. The email at path and the layout around it are markup
+// already, and go in as they are.
 // Email preheader text should be between 40-130 characters long.
 func getEmail(emails fs.FS, path, preheader string, keywords model.Keywords) string {
 	emailBody, err := fs.ReadFile(emails, path+".html")
@@ -343,7 +346,7 @@ func getEmail(emails fs.FS, path, preheader string, keywords model.Keywords) str
 	}
 
 	email := string(layout)
-	email = strings.ReplaceAll(email, "{{preheader}}", preheader)
+	email = strings.ReplaceAll(email, "{{preheader}}", template.HTMLEscapeString(preheader))
 	email = strings.ReplaceAll(email, "{{body}}", string(emailBody))
 
 	if _, ok := keywords["unsubscribe"]; ok {

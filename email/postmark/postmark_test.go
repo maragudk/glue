@@ -71,6 +71,58 @@ func TestSender_SendTransactional(t *testing.T) {
 		is.Equal(t, `"You" <you@example.com>`, rec.get().To)
 	})
 
+	// The preheader and the keywords are both text a sender hands over, and both are escaped where
+	// they go into the email, so neither can bring markup of its own into it.
+	substituted := []struct {
+		name     string
+		send     func(sender *postmark.Sender, t *testing.T) error
+		expected string
+	}{
+		{
+			name: "escapes the preheader",
+			send: func(sender *postmark.Sender, t *testing.T) error {
+				return sender.SendTransactional(t.Context(), "You", "you@example.com", "Hi",
+					`<script>alert("hi")</script>`, "generic", model.Keywords{})
+			},
+			expected: `<span class="preheader">&lt;script&gt;alert(&#34;hi&#34;)&lt;/script&gt;</span>`,
+		},
+		{
+			name: "escapes a keyword",
+			send: func(sender *postmark.Sender, t *testing.T) error {
+				return sender.SendTransactional(t.Context(), "You", "you@example.com", "Hi", "Hey there.", "generic",
+					model.Keywords{"title": `<script>alert("hi")</script>`})
+			},
+			expected: `<h1>&lt;script&gt;alert(&#34;hi&#34;)&lt;/script&gt;</h1>`,
+		},
+	}
+
+	for _, test := range substituted {
+		t.Run(test.name, func(t *testing.T) {
+			sender, rec := newSender(t, nil)
+
+			err := test.send(sender, t)
+			is.NotError(t, err)
+
+			body := rec.get().HtmlBody
+			is.True(t, strings.Contains(body, test.expected), "substituted text was not escaped")
+			is.True(t, !strings.Contains(body, "<script>"), "substituted text brought markup into the email")
+		})
+	}
+
+	// The layout and the email under it are markup, so they go in as they are, or every email would
+	// arrive as a page of angle brackets.
+	t.Run("leaves the markup around the substituted text alone", func(t *testing.T) {
+		sender, rec := newSender(t, nil)
+
+		err := sender.SendTransactional(t.Context(), "You", "you@example.com", "Hi", "Hey there.", "generic",
+			model.Keywords{"title": "Hello", "content": "World"})
+		is.NotError(t, err)
+
+		body := rec.get().HtmlBody
+		is.True(t, strings.Contains(body, "<h1>Hello</h1>"), "the email markup was escaped")
+		is.True(t, strings.Contains(body, `<span class="preheader">Hey there.</span>`), "the layout markup was escaped")
+	})
+
 	tests := []struct {
 		name        string
 		displayName string
