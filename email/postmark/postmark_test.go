@@ -2,6 +2,7 @@ package postmark_test
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/mail"
@@ -13,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"maragu.dev/is"
 
+	"maragu.dev/glue/email"
 	"maragu.dev/glue/email/postmark"
 	"maragu.dev/glue/model"
 )
@@ -25,7 +27,7 @@ func TestSender_SendTransactional(t *testing.T) {
 			is.NotError(t, err)
 		})
 
-		err := sender.SendTransactional(t.Context(), "You", "you@example.com", "Hi", "Hey there.", "generic", model.Keywords{})
+		err := sender.SendTransactional(t.Context(), newSendOptions())
 		is.Equal(t, "error sending email, got error code 100", err.Error())
 	})
 
@@ -34,7 +36,7 @@ func TestSender_SendTransactional(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 		})
 
-		err := sender.SendTransactional(t.Context(), "You", "you@example.com", "Hi", "Hey there.", "generic", model.Keywords{})
+		err := sender.SendTransactional(t.Context(), newSendOptions())
 		is.Equal(t, "error sending email, got http status code 500", err.Error())
 	})
 
@@ -45,14 +47,14 @@ func TestSender_SendTransactional(t *testing.T) {
 			is.NotError(t, err)
 		})
 
-		err := sender.SendTransactional(t.Context(), "You", "you@example.com", "Hi", "Hey there.", "generic", model.Keywords{})
+		err := sender.SendTransactional(t.Context(), newSendOptions())
 		is.NotError(t, err)
 	})
 
 	t.Run("sends the configured from and reply-to on the transactional message stream", func(t *testing.T) {
 		sender, rec := newSender(t, nil)
 
-		err := sender.SendTransactional(t.Context(), "You", "you@example.com", "Hi", "Hey there.", "generic", model.Keywords{})
+		err := sender.SendTransactional(t.Context(), newSendOptions())
 		is.NotError(t, err)
 
 		body := rec.get()
@@ -65,34 +67,50 @@ func TestSender_SendTransactional(t *testing.T) {
 	t.Run("lowercases the recipient email address", func(t *testing.T) {
 		sender, rec := newSender(t, nil)
 
-		err := sender.SendTransactional(t.Context(), "You", "YOU@Example.COM", "Hi", "Hey there.", "generic", model.Keywords{})
+		opts := newSendOptions()
+		opts.To = "YOU@Example.COM"
+
+		err := sender.SendTransactional(t.Context(), opts)
 		is.NotError(t, err)
 
 		is.Equal(t, `"You" <you@example.com>`, rec.get().To)
 	})
 
+	// The keywords and the preheader go in, and the layout and the email under them stay markup, or
+	// every email would arrive as a page of angle brackets.
+	t.Run("replaces keywords in the email and leaves its markup alone", func(t *testing.T) {
+		sender, rec := newSender(t, nil)
+
+		opts := newSendOptions()
+		opts.Keywords = model.Keywords{"title": "Hello", "content": "World"}
+
+		err := sender.SendTransactional(t.Context(), opts)
+		is.NotError(t, err)
+
+		body := rec.get().HtmlBody
+		is.True(t, strings.Contains(body, "<h1>Hello</h1>"), "title keyword was not replaced")
+		is.True(t, strings.Contains(body, "<p>World</p>"), "content keyword was not replaced")
+		is.True(t, strings.Contains(body, `<span class="preheader">Hey there.</span>`), "preheader was not replaced")
+	})
+
 	// The preheader and the keywords are both text a sender hands over, and both are escaped where
 	// they go into the email, so neither can bring markup of its own into it.
 	substituted := []struct {
-		name     string
-		send     func(sender *postmark.Sender, t *testing.T) error
-		expected string
+		name      string
+		preheader string
+		keywords  model.Keywords
+		expected  string
 	}{
 		{
-			name: "escapes the preheader",
-			send: func(sender *postmark.Sender, t *testing.T) error {
-				return sender.SendTransactional(t.Context(), "You", "you@example.com", "Hi",
-					`<script>alert("hi")</script>`, "generic", model.Keywords{})
-			},
-			expected: `<span class="preheader">&lt;script&gt;alert(&#34;hi&#34;)&lt;/script&gt;</span>`,
+			name:      "escapes the preheader",
+			preheader: `<script>alert("hi")</script>`,
+			expected:  `<span class="preheader">&lt;script&gt;alert(&#34;hi&#34;)&lt;/script&gt;</span>`,
 		},
 		{
-			name: "escapes a keyword",
-			send: func(sender *postmark.Sender, t *testing.T) error {
-				return sender.SendTransactional(t.Context(), "You", "you@example.com", "Hi", "Hey there.", "generic",
-					model.Keywords{"title": `<script>alert("hi")</script>`})
-			},
-			expected: `<h1>&lt;script&gt;alert(&#34;hi&#34;)&lt;/script&gt;</h1>`,
+			name:      "escapes a keyword",
+			preheader: "Hey there.",
+			keywords:  model.Keywords{"title": `<script>alert("hi")</script>`},
+			expected:  `<h1>&lt;script&gt;alert(&#34;hi&#34;)&lt;/script&gt;</h1>`,
 		},
 	}
 
@@ -100,7 +118,11 @@ func TestSender_SendTransactional(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			sender, rec := newSender(t, nil)
 
-			err := test.send(sender, t)
+			opts := newSendOptions()
+			opts.Preheader = test.preheader
+			opts.Keywords = test.keywords
+
+			err := sender.SendTransactional(t.Context(), opts)
 			is.NotError(t, err)
 
 			body := rec.get().HtmlBody
@@ -109,18 +131,168 @@ func TestSender_SendTransactional(t *testing.T) {
 		})
 	}
 
-	// The layout and the email under it are markup, so they go in as they are, or every email would
-	// arrive as a page of angle brackets.
-	t.Run("leaves the markup around the substituted text alone", func(t *testing.T) {
+	// The sender fills in these three itself, from what it and the send were given, and the templates
+	// under emails use them.
+	t.Run("replaces the always-included keywords in the email", func(t *testing.T) {
 		sender, rec := newSender(t, nil)
 
-		err := sender.SendTransactional(t.Context(), "You", "you@example.com", "Hi", "Hey there.", "generic",
-			model.Keywords{"title": "Hello", "content": "World"})
+		opts := newSendOptions()
+		opts.Template = "new-email-notification"
+		opts.ToName = "You"
+
+		err := sender.SendTransactional(t.Context(), opts)
 		is.NotError(t, err)
 
 		body := rec.get().HtmlBody
-		is.True(t, strings.Contains(body, "<h1>Hello</h1>"), "the email markup was escaped")
-		is.True(t, strings.Contains(body, `<span class="preheader">Hey there.</span>`), "the layout markup was escaped")
+		is.True(t, strings.Contains(body, "<h1>Hi You!</h1>"), "name keyword was not replaced")
+		is.True(t, strings.Contains(body, ">Appy</a>"), "appName keyword was not replaced")
+		is.True(t, strings.Contains(body, `href="http://localhost:1234"`), "baseURL keyword was not replaced")
+	})
+
+	t.Run("leaves the given keywords alone", func(t *testing.T) {
+		sender, _ := newSender(t, nil)
+
+		opts := newSendOptions()
+		opts.Keywords = model.Keywords{"title": "Hello"}
+
+		err := sender.SendTransactional(t.Context(), opts)
+		is.NotError(t, err)
+
+		is.Equal(t, 1, len(opts.Keywords))
+		is.Equal(t, "Hello", opts.Keywords["title"])
+	})
+
+	// Nothing an address can be made to say from outside produces any of these, so each one is a
+	// mistake in the code that called, and panics rather than failing the send.
+	panics := []struct {
+		name     string
+		adjust   func(opts *email.SendOptions)
+		expected string
+	}{
+		{
+			name:     "panics without a template",
+			adjust:   func(opts *email.SendOptions) { opts.Template = "" },
+			expected: "no email template given",
+		},
+		{
+			name: "panics without a recipient email address",
+			adjust: func(opts *email.SendOptions) {
+				opts.To = " "
+				opts.ToName = ""
+			},
+			expected: "no recipient email address given",
+		},
+		{
+			name:     "panics on a recipient name without an address",
+			adjust:   func(opts *email.SendOptions) { opts.To = "" },
+			expected: "no recipient email address given",
+		},
+		{
+			// Falling back to the configured reply-to here would answer a name with somebody else's
+			// address.
+			name:     "panics on a reply-to name without an address",
+			adjust:   func(opts *email.SendOptions) { opts.ReplyToName = "Someone" },
+			expected: `the reply-to has a display name "Someone" but no email address`,
+		},
+	}
+
+	for _, test := range panics {
+		t.Run(test.name, func(t *testing.T) {
+			sender, rec := newSender(t, nil)
+
+			opts := newSendOptions()
+			test.adjust(&opts)
+
+			defer func() {
+				r := recover()
+				is.True(t, r != nil, "SendTransactional did not panic")
+
+				message, ok := r.(string)
+				is.True(t, ok, "panic value is not a string")
+				is.Equal(t, test.expected, message)
+
+				is.Equal(t, 0, rec.requests())
+			}()
+
+			_ = sender.SendTransactional(t.Context(), opts)
+		})
+	}
+
+	t.Run("sends the given reply-to instead of the configured one, lowercased", func(t *testing.T) {
+		sender, rec := newSender(t, nil)
+
+		opts := newSendOptions()
+		opts.ReplyTo = "Someone@Example.com"
+		opts.ReplyToName = "Someone"
+
+		err := sender.SendTransactional(t.Context(), opts)
+		is.NotError(t, err)
+
+		is.Equal(t, `"Someone" <someone@example.com>`, rec.get().ReplyTo)
+	})
+
+	t.Run("sends the given reply-to without a name", func(t *testing.T) {
+		sender, rec := newSender(t, nil)
+
+		opts := newSendOptions()
+		opts.ReplyTo = "someone@example.com"
+
+		err := sender.SendTransactional(t.Context(), opts)
+		is.NotError(t, err)
+
+		is.Equal(t, `<someone@example.com>`, rec.get().ReplyTo)
+	})
+
+	t.Run("encodes a reply-to name like a recipient name", func(t *testing.T) {
+		sender, rec := newSender(t, nil)
+
+		opts := newSendOptions()
+		opts.ReplyTo = "someone@example.com"
+		opts.ReplyToName = "Søren\r\nBcc: evil@example.com"
+
+		err := sender.SendTransactional(t.Context(), opts)
+		is.NotError(t, err)
+
+		replyTo := rec.get().ReplyTo
+		is.Equal(t, `=?utf-8?b?U8O4cmVuDQpCY2M6IGV2aWxAZXhhbXBsZS5jb20=?= <someone@example.com>`, replyTo)
+
+		addresses, err := mail.ParseAddressList(replyTo)
+		is.NotError(t, err)
+		is.Equal(t, 1, len(addresses))
+		is.Equal(t, "someone@example.com", addresses[0].Address)
+	})
+
+	t.Run("leaves out the reply-to when neither the sender nor the send has one", func(t *testing.T) {
+		endpointURL, rec := newServer(t, nil)
+
+		sender := postmark.NewSender(postmark.NewSenderOptions{
+			Emails:                    os.DirFS("../emails"),
+			EndpointURL:               endpointURL,
+			TransactionalEmailAddress: "transactional@example.com",
+		})
+
+		err := sender.SendTransactional(t.Context(), newSendOptions())
+		is.NotError(t, err)
+
+		var fields map[string]any
+		is.NotError(t, json.Unmarshal(rec.json(), &fields))
+		_, found := fields["ReplyTo"]
+		is.True(t, !found, "a reply-to was sent")
+	})
+
+	// An address can be made hostile by whoever supplies it, so a refused one fails the send and does
+	// not panic: panicking would hand anyone who can influence an address a way to stop the process.
+	t.Run("returns error on a reply-to address that would change the structure of the header", func(t *testing.T) {
+		sender, rec := newSender(t, nil)
+
+		opts := newSendOptions()
+		opts.ReplyTo = "someone@example.com>, <evil@example.com"
+
+		err := sender.SendTransactional(t.Context(), opts)
+		is.True(t, err != nil, "address was not rejected")
+		is.Equal(t, `error creating reply-to: email address contains '>', which would change the structure of the header`, err.Error())
+
+		is.Equal(t, 0, rec.requests())
 	})
 
 	tests := []struct {
@@ -181,7 +353,10 @@ func TestSender_SendTransactional(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			sender, rec := newSender(t, nil)
 
-			err := sender.SendTransactional(t.Context(), test.displayName, "you@example.com", "Hi", "Hey there.", "generic", model.Keywords{})
+			opts := newSendOptions()
+			opts.ToName = test.displayName
+
+			err := sender.SendTransactional(t.Context(), opts)
 			is.NotError(t, err)
 
 			to := rec.get().To
@@ -253,7 +428,10 @@ func TestSender_SendTransactional(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			sender, rec := newSender(t, nil)
 
-			err := sender.SendTransactional(t.Context(), "You", test.address, "Hi", "Hey there.", "generic", model.Keywords{})
+			opts := newSendOptions()
+			opts.To = test.address
+
+			err := sender.SendTransactional(t.Context(), opts)
 			is.True(t, err != nil, "address was not rejected")
 			is.Equal(t, test.expected, err.Error())
 
@@ -304,7 +482,10 @@ func TestSender_SendTransactional(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			sender, rec := newSender(t, nil)
 
-			err := sender.SendTransactional(t.Context(), "You", test.address, "Hi", "Hey there.", "generic", model.Keywords{})
+			opts := newSendOptions()
+			opts.To = test.address
+
+			err := sender.SendTransactional(t.Context(), opts)
 			is.NotError(t, err)
 
 			to := rec.get().To
@@ -350,6 +531,7 @@ func TestNewSender(t *testing.T) {
 				r := recover()
 				is.True(t, r != nil, "NewSender did not panic")
 
+				// The refused address is what went wrong, so the panic carries that error itself.
 				err, ok := r.(error)
 				is.True(t, ok, "panic value is not an error")
 				is.Equal(t, test.expected, err.Error())
@@ -358,6 +540,22 @@ func TestNewSender(t *testing.T) {
 			postmark.NewSender(test.opts)
 		})
 	}
+
+	// The second entry point for the name-without-address rule: without it the sender would be built
+	// with the name dropped and no reply-to at all. Nothing went wrong further down to carry up here,
+	// so this one panics with a message rather than an error.
+	t.Run("panics on a configured name without its address", func(t *testing.T) {
+		defer func() {
+			r := recover()
+			is.True(t, r != nil, "NewSender did not panic")
+
+			message, ok := r.(string)
+			is.True(t, ok, "panic value is not a string")
+			is.Equal(t, `ReplyToEmailAddress has a display name "Supporter" but no email address`, message)
+		}()
+
+		postmark.NewSender(postmark.NewSenderOptions{ReplyToEmailName: "Supporter"})
+	})
 
 	t.Run("does not panic on ordinary configured email addresses", func(t *testing.T) {
 		postmark.NewSender(postmark.NewSenderOptions{
@@ -385,12 +583,14 @@ type recorder struct {
 	mu    sync.Mutex
 	body  requestBody
 	count int
+	raw   []byte
 }
 
-func (r *recorder) set(body requestBody) {
+func (r *recorder) set(body requestBody, raw []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.body = body
+	r.raw = raw
 	r.count++
 }
 
@@ -400,6 +600,13 @@ func (r *recorder) get() requestBody {
 	return r.body
 }
 
+// json of the last request body, for telling a field that was left out from one that was sent empty.
+func (r *recorder) json() []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.raw
+}
+
 // requests received so far.
 func (r *recorder) requests() int {
 	r.mu.Lock()
@@ -407,22 +614,30 @@ func (r *recorder) requests() int {
 	return r.count
 }
 
-// newSender backed by a test server which records the request body before delegating to the given
-// handler. A nil handler responds with a bare 200.
-func newSender(t *testing.T, h http.HandlerFunc) (*postmark.Sender, *recorder) {
+// newServer which records the request body before delegating to the given handler, returning the
+// endpoint URL to point a sender at and the recorder. A nil handler responds with a bare 200.
+func newServer(t *testing.T, h http.HandlerFunc) (string, *recorder) {
 	t.Helper()
 
 	var rec recorder
 
 	mux := chi.NewRouter()
 	mux.Post("/email", func(w http.ResponseWriter, r *http.Request) {
+		bodyAsBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error("error reading request body:", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
 		var body requestBody
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := json.Unmarshal(bodyAsBytes, &body); err != nil {
 			t.Error("error decoding request body:", err)
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		rec.set(body)
+
+		rec.set(body, bodyAsBytes)
 
 		if h != nil {
 			h(w, r)
@@ -432,10 +647,20 @@ func newSender(t *testing.T, h http.HandlerFunc) (*postmark.Sender, *recorder) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
+	return server.URL + "/email", &rec
+}
+
+// newSender with every address configured, backed by [newServer].
+func newSender(t *testing.T, h http.HandlerFunc) (*postmark.Sender, *recorder) {
+	t.Helper()
+
+	endpointURL, rec := newServer(t, h)
+
 	sender := postmark.NewSender(postmark.NewSenderOptions{
+		AppName:                   "Appy",
 		BaseURL:                   "http://localhost:1234",
 		Emails:                    os.DirFS("../emails"),
-		EndpointURL:               server.URL + "/email",
+		EndpointURL:               endpointURL,
 		Key:                       "123abc",
 		MarketingEmailAddress:     "marketing@example.com",
 		MarketingEmailName:        "Marketer",
@@ -445,5 +670,16 @@ func newSender(t *testing.T, h http.HandlerFunc) (*postmark.Sender, *recorder) {
 		TransactionalEmailName:    "Transactionaler",
 	})
 
-	return sender, &rec
+	return sender, rec
+}
+
+// newSendOptions for an ordinary email, which a test can adjust one field at a time.
+func newSendOptions() email.SendOptions {
+	return email.SendOptions{
+		Preheader: "Hey there.",
+		Subject:   "Hi",
+		Template:  "generic",
+		To:        "you@example.com",
+		ToName:    "You",
+	}
 }
