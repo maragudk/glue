@@ -110,10 +110,14 @@ type requestBody struct {
 	MessageStream string
 	From          nameAndEmail
 	To            nameAndEmail
-	ReplyTo       nameAndEmail `json:",omitempty"`
-	Subject       string
-	TextBody      string
-	HtmlBody      string
+
+	// ReplyTo is the only field here an email can do without, and without the tag one that has no
+	// reply-to would go out carrying an empty address.
+	ReplyTo nameAndEmail `json:",omitempty"`
+
+	Subject  string
+	TextBody string
+	HtmlBody string
 }
 
 func (s *Sender) send(ctx context.Context, typ emailType, opts email.SendOptions) error {
@@ -145,12 +149,11 @@ func (s *Sender) send(ctx context.Context, typ emailType, opts email.SendOptions
 	}
 
 	if opts.Template == "" {
-		err := errors.New("no email template given")
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "no template")
-		return err
+		panic(errors.New("no email template given"))
 	}
 
+	// An address can be made hostile from outside, so a refused one is an error. Leaving one out
+	// altogether cannot, so it is a mistake here and panics.
 	to, err := createNameAndEmail(opts.ToName, opts.To)
 	if err != nil {
 		span.RecordError(err)
@@ -158,11 +161,10 @@ func (s *Sender) send(ctx context.Context, typ emailType, opts email.SendOptions
 		return errors.Wrap(err, "error creating recipient")
 	}
 	if to == "" {
-		err := errors.New("no recipient email address given")
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "no recipient")
-		return err
+		panic(errors.New("no recipient email address given"))
 	}
+
+	mustHaveAddress("the reply-to", opts.ReplyToName, opts.ReplyTo)
 
 	replyTo, err := createNameAndEmail(opts.ReplyToName, opts.ReplyTo)
 	if err != nil {
@@ -295,9 +297,7 @@ func (s *Sender) sendRequest(ctx context.Context, body requestBody) error {
 // createNameAndEmail returns a name and email string ready for inserting into From, To, and ReplyTo
 // fields, and an error if [structuralRune] finds a character in the address that would change the
 // structure of the header. The address is lowercased and trimmed of surrounding whitespace first.
-// An address that is empty by then gives an empty combo, for a field to leave out, unless a display
-// name came with it: a name addresses nobody on its own, and answering it with some other address is
-// worse than refusing it.
+// An address that is empty by then gives an empty combo, name and all, for a field to leave out.
 // A printable ASCII display name becomes an RFC 5322 quoted string, any other name an RFC 2047
 // encoded-word, and an empty name is left out entirely, so no display name can end its own quoted
 // string or encoded-word. Between that and the check on the address, neither part can turn one
@@ -307,9 +307,6 @@ func createNameAndEmail(name string, email model.EmailAddress) (nameAndEmail, er
 	address := mail.Address{Address: email.ToLower().String()}
 
 	if address.Address == "" {
-		if name != "" {
-			return "", errors.Newf("display name %q came without an email address", name)
-		}
 		return "", nil
 	}
 
@@ -331,11 +328,23 @@ func createNameAndEmail(name string, email model.EmailAddress) (nameAndEmail, er
 // mustCreateNameAndEmail as [createNameAndEmail], panicking instead of returning an error, and naming
 // the option the address came from so the panic says which one to fix.
 func mustCreateNameAndEmail(option, name string, email model.EmailAddress) nameAndEmail {
+	mustHaveAddress(option, name, email)
+
 	combo, err := createNameAndEmail(name, email)
 	if err != nil {
 		panic(errors.Wrap(err, "error creating name and email for %v", option))
 	}
 	return combo
+}
+
+// mustHaveAddress panics when a display name came without an address to go with it, naming what
+// carried the two so the panic says which one to fix. A name addresses nobody on its own, so the two
+// apart are a mistake where they were chosen, not something an address can be made to do from
+// outside. Left alone, the name would be dropped and the field left out or filled from elsewhere.
+func mustHaveAddress(what, name string, email model.EmailAddress) {
+	if name != "" && email.ToLower() == "" {
+		panic(errors.Newf("%v has a display name %q but no email address", what, name))
+	}
 }
 
 // structuralRune returns the first rune of the email address that would change the structure of the

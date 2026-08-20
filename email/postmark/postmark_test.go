@@ -162,28 +162,61 @@ func TestSender_SendTransactional(t *testing.T) {
 		is.Equal(t, "Hello", opts.Keywords["title"])
 	})
 
-	t.Run("returns error without a template", func(t *testing.T) {
-		sender, rec := newSender(t, nil)
+	// Nothing an address can be made to say from outside produces any of these, so each one is a
+	// mistake in the code that called, and panics rather than failing the send.
+	panics := []struct {
+		name     string
+		adjust   func(opts *email.SendOptions)
+		expected string
+	}{
+		{
+			name:     "panics without a template",
+			adjust:   func(opts *email.SendOptions) { opts.Template = "" },
+			expected: "no email template given",
+		},
+		{
+			name: "panics without a recipient email address",
+			adjust: func(opts *email.SendOptions) {
+				opts.To = " "
+				opts.ToName = ""
+			},
+			expected: "no recipient email address given",
+		},
+		{
+			name:     "panics on a recipient name without an address",
+			adjust:   func(opts *email.SendOptions) { opts.To = "" },
+			expected: "no recipient email address given",
+		},
+		{
+			// Falling back to the configured reply-to here would answer a name with somebody else's
+			// address.
+			name:     "panics on a reply-to name without an address",
+			adjust:   func(opts *email.SendOptions) { opts.ReplyToName = "Someone" },
+			expected: `the reply-to has a display name "Someone" but no email address`,
+		},
+	}
 
-		opts := newSendOptions()
-		opts.Template = ""
+	for _, test := range panics {
+		t.Run(test.name, func(t *testing.T) {
+			sender, rec := newSender(t, nil)
 
-		err := sender.SendTransactional(t.Context(), opts)
-		is.Equal(t, "no email template given", err.Error())
-		is.Equal(t, 0, rec.requests())
-	})
+			opts := newSendOptions()
+			test.adjust(&opts)
 
-	t.Run("returns error without a recipient email address", func(t *testing.T) {
-		sender, rec := newSender(t, nil)
+			defer func() {
+				r := recover()
+				is.True(t, r != nil, "SendTransactional did not panic")
 
-		opts := newSendOptions()
-		opts.To = " "
-		opts.ToName = ""
+				err, ok := r.(error)
+				is.True(t, ok, "panic value is not an error")
+				is.Equal(t, test.expected, err.Error())
 
-		err := sender.SendTransactional(t.Context(), opts)
-		is.Equal(t, "no recipient email address given", err.Error())
-		is.Equal(t, 0, rec.requests())
-	})
+				is.Equal(t, 0, rec.requests())
+			}()
+
+			_ = sender.SendTransactional(t.Context(), opts)
+		})
+	}
 
 	t.Run("sends the given reply-to instead of the configured one, lowercased", func(t *testing.T) {
 		sender, rec := newSender(t, nil)
@@ -229,29 +262,6 @@ func TestSender_SendTransactional(t *testing.T) {
 		is.Equal(t, "someone@example.com", addresses[0].Address)
 	})
 
-	// Falling back to the configured reply-to here would answer a name with somebody else's address.
-	t.Run("rejects a reply-to name without an address", func(t *testing.T) {
-		sender, rec := newSender(t, nil)
-
-		opts := newSendOptions()
-		opts.ReplyToName = "Someone"
-
-		err := sender.SendTransactional(t.Context(), opts)
-		is.Equal(t, `error creating reply-to: display name "Someone" came without an email address`, err.Error())
-		is.Equal(t, 0, rec.requests())
-	})
-
-	t.Run("rejects a recipient name without an address", func(t *testing.T) {
-		sender, rec := newSender(t, nil)
-
-		opts := newSendOptions()
-		opts.To = ""
-
-		err := sender.SendTransactional(t.Context(), opts)
-		is.Equal(t, `error creating recipient: display name "You" came without an email address`, err.Error())
-		is.Equal(t, 0, rec.requests())
-	})
-
 	t.Run("leaves out the reply-to when neither the sender nor the send has one", func(t *testing.T) {
 		endpointURL, rec := newServer(t, nil)
 
@@ -270,7 +280,9 @@ func TestSender_SendTransactional(t *testing.T) {
 		is.True(t, !found, "a reply-to was sent")
 	})
 
-	t.Run("rejects a reply-to address that would change the structure of the header", func(t *testing.T) {
+	// An address can be made hostile by whoever supplies it, so a refused one fails the send and does
+	// not panic: panicking would hand anyone who can influence an address a way to stop the process.
+	t.Run("returns error on a reply-to address that would change the structure of the header", func(t *testing.T) {
 		sender, rec := newSender(t, nil)
 
 		opts := newSendOptions()
@@ -512,9 +524,11 @@ func TestNewSender(t *testing.T) {
 			expected: `error creating name and email for TransactionalEmailAddress: email address contains '\r', which would change the structure of the header`,
 		},
 		{
+			// The second entry point for the same rule: without this the sender would be built with
+			// the name dropped and no reply-to at all.
 			name:     "panics on a configured name without its address",
 			opts:     postmark.NewSenderOptions{ReplyToEmailName: "Supporter"},
-			expected: `error creating name and email for ReplyToEmailAddress: display name "Supporter" came without an email address`,
+			expected: `ReplyToEmailAddress has a display name "Supporter" but no email address`,
 		},
 	}
 
