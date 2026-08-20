@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"io"
 	"io/fs"
@@ -149,7 +150,7 @@ func (s *Sender) send(ctx context.Context, typ emailType, opts email.SendOptions
 	}
 
 	if opts.Template == "" {
-		panic(errors.New("no email template given"))
+		panic("no email template given")
 	}
 
 	// An address can be made hostile from outside, so a refused one is an error. Leaving one out
@@ -161,7 +162,7 @@ func (s *Sender) send(ctx context.Context, typ emailType, opts email.SendOptions
 		return errors.Wrap(err, "error creating recipient")
 	}
 	if to == "" {
-		panic(errors.New("no recipient email address given"))
+		panic("no recipient email address given")
 	}
 
 	mustHaveAddress("the reply-to", opts.ReplyToName, opts.ReplyTo)
@@ -343,7 +344,7 @@ func mustCreateNameAndEmail(option, name string, email model.EmailAddress) nameA
 // outside. Left alone, the name would be dropped and the field left out or filled from elsewhere.
 func mustHaveAddress(what, name string, email model.EmailAddress) {
 	if name != "" && email.ToLower() == "" {
-		panic(errors.Newf("%v has a display name %q but no email address", what, name))
+		panic(fmt.Sprintf("%v has a display name %q but no email address", what, name))
 	}
 }
 

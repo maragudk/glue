@@ -207,9 +207,9 @@ func TestSender_SendTransactional(t *testing.T) {
 				r := recover()
 				is.True(t, r != nil, "SendTransactional did not panic")
 
-				err, ok := r.(error)
-				is.True(t, ok, "panic value is not an error")
-				is.Equal(t, test.expected, err.Error())
+				message, ok := r.(string)
+				is.True(t, ok, "panic value is not a string")
+				is.Equal(t, test.expected, message)
 
 				is.Equal(t, 0, rec.requests())
 			}()
@@ -523,13 +523,6 @@ func TestNewSender(t *testing.T) {
 			opts:     postmark.NewSenderOptions{TransactionalEmailAddress: "transactional@example.com\rBcc: evil@example.com"},
 			expected: `error creating name and email for TransactionalEmailAddress: email address contains '\r', which would change the structure of the header`,
 		},
-		{
-			// The second entry point for the same rule: without this the sender would be built with
-			// the name dropped and no reply-to at all.
-			name:     "panics on a configured name without its address",
-			opts:     postmark.NewSenderOptions{ReplyToEmailName: "Supporter"},
-			expected: `ReplyToEmailAddress has a display name "Supporter" but no email address`,
-		},
 	}
 
 	for _, test := range options {
@@ -538,6 +531,7 @@ func TestNewSender(t *testing.T) {
 				r := recover()
 				is.True(t, r != nil, "NewSender did not panic")
 
+				// The refused address is what went wrong, so the panic carries that error itself.
 				err, ok := r.(error)
 				is.True(t, ok, "panic value is not an error")
 				is.Equal(t, test.expected, err.Error())
@@ -546,6 +540,22 @@ func TestNewSender(t *testing.T) {
 			postmark.NewSender(test.opts)
 		})
 	}
+
+	// The second entry point for the name-without-address rule: without it the sender would be built
+	// with the name dropped and no reply-to at all. Nothing went wrong further down to carry up here,
+	// so this one panics with a message rather than an error.
+	t.Run("panics on a configured name without its address", func(t *testing.T) {
+		defer func() {
+			r := recover()
+			is.True(t, r != nil, "NewSender did not panic")
+
+			message, ok := r.(string)
+			is.True(t, ok, "panic value is not a string")
+			is.Equal(t, `ReplyToEmailAddress has a display name "Supporter" but no email address`, message)
+		}()
+
+		postmark.NewSender(postmark.NewSenderOptions{ReplyToEmailName: "Supporter"})
+	})
 
 	t.Run("does not panic on ordinary configured email addresses", func(t *testing.T) {
 		postmark.NewSender(postmark.NewSenderOptions{
