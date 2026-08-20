@@ -46,11 +46,12 @@ func Start(startCallback StartFunc) {
 	})
 
 	name := env.GetStringOrDefault("APP_NAME", "App")
-	log.InfoContext(ctx, "Starting app", "name", name)
+	version := getVersion()
+	log.InfoContext(ctx, "Starting app", "name", name, "version", version)
 
 	// We call the callback so it can return errors and we can handle it just here.
 	// Also makes it easier to test starting the app if needed, because tests don't handle os.Exit well.
-	if err := start(ctx, log, name, startCallback); err != nil {
+	if err := start(ctx, log, name, version, startCallback); err != nil {
 		log.ErrorContext(ctx, "Error starting app", "name", name, "error", err)
 		os.Exit(1)
 	}
@@ -58,9 +59,9 @@ func Start(startCallback StartFunc) {
 	log.InfoContext(ctx, "Stopped app", "name", name)
 }
 
-func start(ctx context.Context, log *slog.Logger, name string, startCallback StartFunc) error {
+func start(ctx context.Context, log *slog.Logger, name, version string, startCallback StartFunc) error {
 	otelShutdown, err := otelconfig.ConfigureOpenTelemetry(
-		otelconfig.WithServiceName(name), otelconfig.WithServiceVersion(getVersion()),
+		otelconfig.WithServiceName(name), otelconfig.WithServiceVersion(version),
 		otelconfig.WithMetricsEnabled(false),
 		otelconfig.WithExporterProtocol(otelconfig.ProtocolHTTPProto), otelconfig.WithExporterEndpoint("https://api.honeycomb.io"),
 	)
@@ -83,6 +84,7 @@ func start(ctx context.Context, log *slog.Logger, name string, startCallback Sta
 	return eg.Wait()
 }
 
+// getVersion from the VCS revision stamped into the build info, or "unknown" if the binary carries no such stamp.
 func getVersion() string {
 	if info, ok := debug.ReadBuildInfo(); ok {
 		for _, setting := range info.Settings {
