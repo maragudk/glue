@@ -30,7 +30,7 @@ func TestStart(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 		defer cancel()
 
-		err := start(ctx, slog.New(slog.DiscardHandler), "test", startFunc)
+		err := start(ctx, slog.New(slog.DiscardHandler), "test", "abc123", startFunc)
 		is.NotError(t, err)
 		is.True(t, called)
 		is.True(t, goroutineCalled)
@@ -48,7 +48,7 @@ func TestStart(t *testing.T) {
 			return expectedErr
 		}
 
-		err := start(t.Context(), slog.New(slog.DiscardHandler), "test", startFunc)
+		err := start(t.Context(), slog.New(slog.DiscardHandler), "test", "abc123", startFunc)
 		is.Error(t, expectedErr, err)
 	})
 
@@ -68,7 +68,7 @@ func TestStart(t *testing.T) {
 			return nil
 		}
 
-		err := start(t.Context(), slog.New(slog.DiscardHandler), "test", startFunc)
+		err := start(t.Context(), slog.New(slog.DiscardHandler), "test", "abc123", startFunc)
 		is.Error(t, expectedErr, err)
 	})
 
@@ -85,7 +85,13 @@ func TestStart(t *testing.T) {
 			return nil
 		}
 
-		err := start(ctx, slog.New(slog.DiscardHandler), "test", startFunc)
+		err := start(ctx, slog.New(slog.DiscardHandler), "test", "abc123", startFunc)
 		is.NotError(t, err)
+	})
+}
+
+func TestGetVersion(t *testing.T) {
+	t.Run("should return a non-empty version", func(t *testing.T) {
+		is.True(t, getVersion() != "")
 	})
 }
