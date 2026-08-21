@@ -11,7 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"maragu.dev/is"
 
 	gluehttp "maragu.dev/glue/http"

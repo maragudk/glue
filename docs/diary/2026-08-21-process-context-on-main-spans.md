@@ -651,3 +651,93 @@ and it is the high-cardinality value that never belonged in the span name.
 ### Future work
 
 Nothing new.
+
+## Step 6: Update semantic conventions to v1.43.0
+
+**Author:** builder (sub-agent)
+
+### Prompt Context
+
+**Verbatim prompt:** bring the semantic conventions up to date. glue imports
+`go.opentelemetry.io/otel/semconv/v1.34.0`; update to the newest available. Two steps, both
+required: bump the `go.opentelemetry.io/otel` module from v1.44.0 to v1.45.0, then switch every
+import to the newest semconv package that module ships, because bumping the module alone changes
+nothing -- the old package still exists and still compiles, so skipping the second step fails
+silently. Verify every helper still exists and still means the same thing; report deprecations
+rather than migrating on my own initiative; do not change which attributes glue emits.
+
+### What I did
+
+Bumped the module and moved all seven files from `semconv/v1.34.0` to `semconv/v1.43.0`: the five
+non-test files -- `/http/otel.go`, `/http/auth.go`, `/sql/helper.go`, `/s3/bucket.go`,
+`/email/postmark/postmark.go` -- plus `/http/otel_test.go` and `/s3/bucket_test.go`, which the
+handed-over list did not mention and which a grep found.
+
+otel v1.45.0 ships semconv packages up to **v1.43.0**, not v1.41.0 as v1.44.0 did, so checking
+rather than assuming was worth the one command it cost.
+
+### Why
+
+The versioning here is genuinely confusing and worth writing down. The semconv packages are
+versioned by *semantic-convention* version, not by module version, and a single
+`go.opentelemetry.io/otel` release ships several dozen of them side by side as separate packages.
+otel v1.45.0 carries everything from `semconv/v1.4.0` to `semconv/v1.43.0` in the same module. So
+the old import path keeps compiling forever after a module bump, and a version bump that only edits
+`go.mod` looks successful while changing nothing at all.
+
+### What worked
+
+Rather than trusting a compile pass, which only proves the identifiers exist, I checked the actual
+emitted attributes. Because both semconv versions ship inside the same module, a throwaway program
+could import them side by side and compare every helper glue calls, key, value and type:
+
+    ok  EnduserPseudoID   enduser.pseudo.id=u_1 (STRING)
+    ok  HTTPRoute         http.route=/x/{id} (STRING)
+    ok  DBSystemNameSQLite  db.system.name=sqlite (STRING)
+
+All nineteen came back identical across the nine-version gap -- same key, same value, same type.
+**Nothing glue emits changes**, so no backend column moves. A separate pass over the v1.43.0 source
+found no `Deprecated:` marker on any of them. The throwaway program was deleted afterwards.
+
+The specific worries handed to me all came back clean. `EnduserPseudoID` still emits
+`enduser.pseudo.id`, despite the churn elsewhere in that namespace. `BrowserMobile`,
+`DeviceModelName`, `HTTPRoute`, `URLQuery`, `HTTPRequestBodySize` and `HTTPResponseBodySize` are
+unchanged, as are both `db.system.name` values in `/sql/helper.go`.
+
+The `rpc.system` trap flagged as an example does not apply: glue never calls it. `/s3/bucket.go`
+uses only `AWSS3Bucket`, `AWSS3Key` and `CloudRegion`, all three of them fine.
+
+### What didn't work
+
+Nothing failed. No deprecation to report and no decision to escalate.
+
+### What I learned
+
+The dependency bump is contained. `go.opentelemetry.io/otel`, `otel/trace` and `otel/metric` go
+v1.44.0 to v1.45.0, and `github.com/go-logr/logr` picks up a patch, v1.4.3 to v1.4.4, indirectly.
+Nothing else moves.
+
+`go.opentelemetry.io/otel/sdk` deliberately stays at v1.43.0. It is a separate module on its own
+release line, `go mod tidy` did not pull it forward, and nothing needs it to move. Bumping the SDK
+changes span and resource construction rather than attribute naming, so it is a different change
+with a different risk profile and does not belong in a semconv update.
+
+`otelhttp` pins its own semconv version internally and is untouched by any of this, so the two
+versions coexisting in one binary is expected rather than a smell.
+
+### What was tricky
+
+Only the trap already called out: a module bump that compiles cleanly proves nothing, because the
+old semconv package is still right there. The check that matters is whether the import paths
+actually moved, which is a grep, and whether the emitted attributes actually match, which needed
+the side-by-side comparison.
+
+### What warrants review
+
+Nothing beyond the diff. The claim worth checking is that no attribute changed, and the way to
+check it is to re-run the same comparison rather than to read the code.
+
+### Future work
+
+`go.opentelemetry.io/otel/sdk` is a version behind the API modules. Worth its own bump sometime,
+separately.

@@ -14,7 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"golang.org/x/sync/errgroup"
 	"maragu.dev/env"
 	"maragu.dev/is"
