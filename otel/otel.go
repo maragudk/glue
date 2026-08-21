@@ -19,40 +19,40 @@ var processStart = time.Now()
 //
 // The attributes also describe the process which did the work, so a trace answers what state the process
 // was in without leaving the tracing backend: uptime_sec is whole seconds since process start, and
-// uptime_sec_log_10 is the base 10 logarithm of those seconds, which keeps a process up for seconds and
-// one up for days readable on the same heatmap.
+// uptime_sec_log_10 buckets those seconds by order of magnitude, so a process up for seconds and one up
+// for days stay comparable in the same query.
 //
 // The result is a new slice on each call, and can either be passed to a span at start time or set on a
 // span which is already running, whichever fits. Applications have units of work of their own -- a
 // scheduler tick, a CLI invocation, a consumer of some queue -- and should mark those spans with these
 // too, otherwise that work is missing from every query which filters on main spans.
 func MainSpanAttributes() []attribute.KeyValue {
-	uptime := uptimeAttributes(time.Since(processStart))
-
-	// Sized exactly, so a caller appending to the result reallocates instead of writing into spare capacity
-	attrs := make([]attribute.KeyValue, 0, 1+len(uptime))
-	attrs = append(attrs, attribute.Bool("main", true))
-	return append(attrs, uptime...)
+	attrs := []attribute.KeyValue{attribute.Bool("main", true)}
+	return append(attrs, uptimeAttributes(time.Since(processStart))...)
 }
 
-// uptimeAttributes for the given process uptime, as whole seconds and as the base 10 logarithm of those
-// seconds. [math.Log10] is -Inf at zero and NaN below it, and neither belongs in telemetry, so an uptime
-// shorter than a second gets a logarithm of zero. The seconds are clamped at zero as well, so the two stay
-// consistent for an uptime which somehow reads as negative. A logarithm of zero therefore covers everything
-// up to and including one second, rather than one second alone.
+// uptimeAttributes for the given process uptime, as whole seconds and as the floor of the base 10 logarithm
+// of those seconds. Full precision already sits on uptime_sec next to it, so the logarithm's only job is
+// bucketing by order of magnitude: 0 is under ten seconds, 1 is ten seconds to under two minutes, 2 is up to
+// about seventeen minutes, and so on. Grouping by it turns crash-loop detection into one query rather than
+// something to eyeball on a heatmap.
+//
+// [math.Log10] is -Inf at zero and NaN below it, and converting either of those to an integer gives an
+// undefined result, so an uptime shorter than a second gets a bucket of zero. The seconds are clamped at
+// zero as well, so the two stay consistent for an uptime which somehow reads as negative.
 func uptimeAttributes(uptime time.Duration) []attribute.KeyValue {
 	seconds := int64(uptime / time.Second)
 	if seconds < 0 {
 		seconds = 0
 	}
 
-	var logOfSeconds float64
+	var bucket int64
 	if seconds > 0 {
-		logOfSeconds = math.Log10(float64(seconds))
+		bucket = int64(math.Log10(float64(seconds)))
 	}
 
 	return []attribute.KeyValue{
 		attribute.Int64("uptime_sec", seconds),
-		attribute.Float64("uptime_sec_log_10", logOfSeconds),
+		attribute.Int64("uptime_sec_log_10", bucket),
 	}
 }

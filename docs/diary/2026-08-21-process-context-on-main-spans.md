@@ -348,3 +348,113 @@ which reads one attribute's value out so the test can assert on its type and ran
 an exact value it cannot know in advance. Both belong in `oteltest` if the issue is picked up.
 
 The exported helper is now in place for applications to call from their own units of work.
+
+## Step 3: Review round on PR #194
+
+**Author:** builder (sub-agent)
+
+### Prompt Context
+
+**Verbatim prompt:** Markus left six inline comments on PR #194, all triaged and resolved with
+replies; the coordinator relayed them as one batch to apply -- four on `/app/app.go`, one
+flagging something not to introduce, and one on `/otel/otel.go`, plus a seventh point folding the
+schema-URL discussion out of the code and into this diary.
+**Interpretation:** apply all of it as one commit, including the two rulings that reverse decisions
+from the original requirements.
+**Inferred intent:** cut the indirection and the over-explaining I had built up, and make the two
+telemetry fields answer the question you actually ask them at three in the morning.
+
+### What I did
+
+`otelResourceOptions` is gone. Its two detectors and the build-time attribute now sit in the
+`otelconfig.ConfigureOpenTelemetry` call directly, which means `start` has a single static argument
+list again with no slice building and no `for` loop. `versionAndBuildTime` is gone too, folded back
+into `getVersionAndBuildTime` as one function with one name.
+
+`service.approx_build_time` now falls back to `"unknown"` instead of being omitted. That reverses
+the original requirement, deliberately. `service.version` already reports `"unknown"` for a missing
+`vcs.revision`, and the two stamps fail together for the same reason -- no VCS metadata in the build
+context -- so they should look the same when they fail. An absent column cannot distinguish "this
+build had no VCS stamp" from "this build predates the attribute existing"; `"unknown"` says the code
+ran, looked, and found nothing. Because the value is now never empty, the conditional around the
+attribute went away with everything else.
+
+The eight-line doc comment on that attribute is down to the two lines the code cannot say for
+itself: that the value is the `vcs.time` build setting, that it is the commit timestamp rather than
+the build timestamp, and therefore that it reads as "the code is at least this old".
+
+`uptime_sec_log_10` is now an `attribute.Int64` holding the floor of the logarithm rather than a
+float holding the logarithm itself. Full precision is already on `uptime_sec` right beside it, so
+the field's only job is bucketing, and floored it is an order-of-magnitude bucket you can group by:
+0 is under ten seconds, 1 is ten seconds to under two minutes, 2 is up to about seventeen minutes.
+Crash-loop detection becomes one query rather than a heatmap you have to look at.
+
+`MainSpanAttributes` went back to a composite literal plus `append`. The exact-sizing `make` I had
+added in the last round was justified by a comment that was simply wrong: `append` on a slice with
+no spare capacity reallocates regardless of how the slice was built, so the plain version has the
+same property and two fewer lines.
+
+The startup log line was flagged to stay as it is -- `name` and `version` only, no build time -- and
+it does.
+
+### Why
+
+Every one of these is the same correction: I had been paying for flexibility and explanation that
+nothing needed. A helper called from one place, a pure function split out of a function that was
+already pure enough, a float carrying precision that its neighbour already carries, and a paragraph
+of provenance in a doc comment. The reviewer read the code as a reader rather than as its author,
+and the reader wanted less.
+
+### What worked
+
+The int conversion has a sharp edge I went looking for before trusting it. `int64(math.Log10(x))`
+truncates, so every bucket boundary is an exact power of ten, and exact powers of ten are precisely
+where `math.Log10` can land a hair low -- `2.9999999999999996` for 1000 would floor to 2 and put a
+sixteen-minute-old process in the wrong bucket. I pinned 9, 10, 99, 100, 999, 1000, 10000, 100000
+and 1000000 as table cases before running anything. All nine pass on this toolchain, and they are
+now nailed down so a future change to that line cannot quietly move a boundary.
+
+### What didn't work
+
+Nothing failed. The one thing that did not survive contact with the tests is coverage: `app` fell
+from 67.5% to 48.4% of statements. `TestOtelResourceOptions` and `TestVersionAndBuildTime` both
+tested functions that no longer exist, so both were deleted, and the resource options they asserted
+on are now inline in `start`, which no test can inspect -- `ConfigureOpenTelemetry` returns only a
+shutdown function, never the resource it built. What remains is `TestStart` calling it for real and
+expecting no error, which still catches a detector that stops constructing, and a rewritten
+`TestGetVersionAndBuildTime` asserting neither return value is ever empty, which is the actual
+contract now that both fall back to `"unknown"`.
+
+That is a real reduction in what the tests can see, and it follows from removing the seam rather
+than from any oversight. Worth knowing rather than worth reversing.
+
+### What I learned
+
+The schema-URL detail came out of the code and belongs here instead. `otelconfig` pins semantic
+conventions v1.26.0 on the resource it builds, while the `resource.WithProcessRuntimeName()` and
+`resource.WithProcessRuntimeVersion()` detectors carry a newer version, so merging them returns
+`resource.ErrSchemaURLConflict` and the merged resource ends up with an empty schema URL. Every
+attribute still merges through, and nothing in this setup consumes the schema URL, so the effect is
+nil. The condition also predates this change -- `resource.WithHost()` is an SDK detector too and has
+always been in that call -- and `TestStart` configures OpenTelemetry for real, so a regression would
+fail the build. It was true and load-bearing for me while I was writing the code, and noise for
+everyone reading it afterwards.
+
+### What was tricky
+
+Nothing was tricky mechanically. The judgement call was the `"unknown"` fallback, because it
+reverses a requirement I had implemented and defended twice, once in the original round and once
+under review. The reasoning that flipped it is that consistency between two fields that fail
+together beats per-field purity: a reader comparing `service.version` and
+`service.approx_build_time` sees one story rather than two conventions, and "absent" was carrying
+two meanings it could not tell apart.
+
+### What warrants review
+
+Whether losing the assertion that `process.runtime.name` and `process.runtime.version` actually
+reach the resource is acceptable. It was the strongest thing `TestOtelResourceOptions` did, and
+inlining the options removed the only place a test could stand.
+
+### Future work
+
+Nothing new.

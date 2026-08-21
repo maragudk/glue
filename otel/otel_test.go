@@ -1,7 +1,6 @@
 package otel_test
 
 import (
-	"math"
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -22,11 +21,10 @@ func TestMainSpanAttributes(t *testing.T) {
 		is.True(t, v.AsInt64() >= 0, "uptime should not be negative")
 	})
 
-	t.Run("has a finite uptime logarithm", func(t *testing.T) {
+	t.Run("has an uptime bucket which is a non-negative integer", func(t *testing.T) {
 		v := attributeValue(t, glueotel.MainSpanAttributes(), "uptime_sec_log_10")
-		is.Equal(t, attribute.FLOAT64, v.Type())
-		is.True(t, !math.IsInf(v.AsFloat64(), 0), "uptime logarithm should not be infinite")
-		is.True(t, !math.IsNaN(v.AsFloat64()), "uptime logarithm should not be NaN")
+		is.Equal(t, attribute.INT64, v.Type())
+		is.True(t, v.AsInt64() >= 0, "uptime bucket should not be negative")
 	})
 
 	t.Run("returns a new slice on every call, so one caller cannot affect another", func(t *testing.T) {
@@ -34,12 +32,6 @@ func TestMainSpanAttributes(t *testing.T) {
 		attrs[0] = attribute.Bool("main", false)
 
 		is.True(t, oteltest.HasAttribute(glueotel.MainSpanAttributes(), attribute.Bool("main", true)))
-	})
-
-	t.Run("returns a slice with no spare capacity, so appending to it cannot clobber anything", func(t *testing.T) {
-		attrs := glueotel.MainSpanAttributes()
-
-		is.Equal(t, len(attrs), cap(attrs))
 	})
 }
 

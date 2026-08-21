@@ -4,16 +4,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"runtime"
-	"runtime/debug"
 	"testing"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/sdk/resource"
 	"maragu.dev/is"
-
-	"maragu.dev/glue/oteltest"
 )
 
 func TestStart(t *testing.T) {
@@ -97,73 +91,9 @@ func TestStart(t *testing.T) {
 }
 
 func TestGetVersionAndBuildTime(t *testing.T) {
-	t.Run("should return a non-empty version", func(t *testing.T) {
-		version, _ := getVersionAndBuildTime()
+	t.Run("should never return an empty version or build time", func(t *testing.T) {
+		version, buildTime := getVersionAndBuildTime()
 		is.True(t, version != "")
-	})
-}
-
-func TestVersionAndBuildTime(t *testing.T) {
-	tests := []struct {
-		name      string
-		settings  []debug.BuildSetting
-		version   string
-		buildTime string
-	}{
-		{
-			name:      "no build settings at all",
-			version:   "unknown",
-			buildTime: "",
-		},
-		{
-			name:      "build settings without VCS stamps",
-			settings:  []debug.BuildSetting{{Key: "GOARCH", Value: "arm64"}},
-			version:   "unknown",
-			buildTime: "",
-		},
-		{
-			name:      "both VCS stamps",
-			settings:  []debug.BuildSetting{{Key: "vcs.revision", Value: "abc123"}, {Key: "vcs.time", Value: "2026-08-21T09:41:00Z"}},
-			version:   "abc123",
-			buildTime: "2026-08-21T09:41:00Z",
-		},
-		{
-			name:      "a revision but no time",
-			settings:  []debug.BuildSetting{{Key: "vcs.revision", Value: "abc123"}},
-			version:   "abc123",
-			buildTime: "",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			version, buildTime := versionAndBuildTime(test.settings)
-			is.Equal(t, test.version, version)
-			is.Equal(t, test.buildTime, buildTime)
-		})
-	}
-}
-
-func TestOtelResourceOptions(t *testing.T) {
-	t.Run("should describe the Go runtime the process is running on", func(t *testing.T) {
-		r, err := resource.New(t.Context(), otelResourceOptions("")...)
-		is.NotError(t, err)
-
-		is.True(t, oteltest.HasAttribute(r.Attributes(), attribute.String("process.runtime.name", "go")))
-		is.True(t, oteltest.HasAttribute(r.Attributes(), attribute.String("process.runtime.version", runtime.Version())))
-	})
-
-	t.Run("should have the approximate build time when the binary carries a VCS timestamp", func(t *testing.T) {
-		r, err := resource.New(t.Context(), otelResourceOptions("2026-08-21T09:41:00Z")...)
-		is.NotError(t, err)
-
-		is.True(t, oteltest.HasAttribute(r.Attributes(), attribute.String("service.approx_build_time", "2026-08-21T09:41:00Z")))
-	})
-
-	t.Run("should have no approximate build time at all when the binary carries no VCS timestamp", func(t *testing.T) {
-		r, err := resource.New(t.Context(), otelResourceOptions("")...)
-		is.NotError(t, err)
-
-		is.True(t, !oteltest.HasAttributeKey(r.Attributes(), "service.approx_build_time"), "expected no service.approx_build_time attribute")
+		is.True(t, buildTime != "")
 	})
 }

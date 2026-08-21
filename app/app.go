@@ -62,16 +62,16 @@ func Start(startCallback StartFunc) {
 }
 
 func start(ctx context.Context, log *slog.Logger, name, version, buildTime string, startCallback StartFunc) error {
-	opts := []otelconfig.Option{
+	otelShutdown, err := otelconfig.ConfigureOpenTelemetry(
 		otelconfig.WithServiceName(name), otelconfig.WithServiceVersion(version),
 		otelconfig.WithMetricsEnabled(false),
 		otelconfig.WithExporterProtocol(otelconfig.ProtocolHTTPProto), otelconfig.WithExporterEndpoint("https://api.honeycomb.io"),
-	}
-	for _, opt := range otelResourceOptions(buildTime) {
-		opts = append(opts, otelconfig.WithResourceOption(opt))
-	}
-
-	otelShutdown, err := otelconfig.ConfigureOpenTelemetry(opts...)
+		otelconfig.WithResourceOption(resource.WithProcessRuntimeName()),
+		otelconfig.WithResourceOption(resource.WithProcessRuntimeVersion()),
+		// service.approx_build_time is the vcs.time build setting, which is the commit timestamp rather than
+		// the build timestamp: read it as "the code is at least this old", never as "this binary was built then".
+		otelconfig.WithResourceOption(resource.WithAttributes(attribute.String("service.approx_build_time", buildTime))),
+	)
 	if err != nil {
 		return errors.Wrap(err, "error configuring open telemetry")
 	}
@@ -91,54 +91,19 @@ func start(ctx context.Context, log *slog.Logger, name, version, buildTime strin
 	return eg.Wait()
 }
 
-// otelResourceOptions describing the process and the build it came from, for the OpenTelemetry resource.
-//
-// service.approx_build_time is the value of the vcs.time build setting, which is the commit timestamp of
-// vcs.revision rather than the moment the binary was compiled. It approximates the build time only as
-// closely as the build follows the commit: a pipeline building on merge lands within minutes of it, whereas
-// rebuilding an old commit today reports that commit's old date. Read it as "the code is at least this
-// old", never as "this binary was produced then". It is in RFC 3339 format, as the build setting supplies
-// it.
-//
-// The attribute is left out when there is no timestamp, because a missing attribute is honest, whereas a
-// placeholder value in a timestamp field is not.
-//
-// The detectors carry a newer semantic conventions schema URL than [otelconfig.ConfigureOpenTelemetry] pins
-// on the resource, so merging them yields [resource.ErrSchemaURLConflict], which it tolerates: every
-// attribute still reaches the resource. The tests for [Start] configure OpenTelemetry for real, so they fail
-// if that ever stops being true.
-func otelResourceOptions(buildTime string) []resource.Option {
-	opts := []resource.Option{
-		resource.WithProcessRuntimeName(),
-		resource.WithProcessRuntimeVersion(),
-	}
-
-	if buildTime != "" {
-		opts = append(opts, resource.WithAttributes(attribute.String("service.approx_build_time", buildTime)))
-	}
-
-	return opts
-}
-
 // getVersionAndBuildTime from the VCS information stamped into the build info.
-// See [versionAndBuildTime] for what the two are.
+// The version is the VCS revision and the build time is its commit timestamp in RFC 3339 format.
+// Both need VCS metadata in the build context, so they are stamped together, and both fall back to
+// "unknown" when the binary carries no such stamp.
 func getVersionAndBuildTime() (string, string) {
-	var settings []debug.BuildSetting
-	if info, ok := debug.ReadBuildInfo(); ok {
-		settings = info.Settings
+	version, buildTime := "unknown", "unknown"
+
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return version, buildTime
 	}
-	return versionAndBuildTime(settings)
-}
 
-// versionAndBuildTime from the given build settings.
-// The version is the VCS revision, or "unknown" if the settings carry no such stamp.
-// The build time is the commit timestamp of that revision in RFC 3339 format, and is empty if the settings carry
-// no such stamp. Both need VCS metadata in the build context, so in practice they are stamped together.
-func versionAndBuildTime(settings []debug.BuildSetting) (string, string) {
-	version := "unknown"
-	var buildTime string
-
-	for _, setting := range settings {
+	for _, setting := range info.Settings {
 		switch setting.Key {
 		case "vcs.revision":
 			version = setting.Value
