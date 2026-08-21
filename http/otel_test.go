@@ -127,6 +127,34 @@ func TestOpenTelemetry(t *testing.T) {
 		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.HTTPRoute("/users/{id}")))
 	})
 
+	t.Run("names the span with just the method when no route matches", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		mux := chi.NewMux()
+		mux.Use(gluehttp.OpenTelemetry)
+		mux.Get("/things", func(w http.ResponseWriter, r *http.Request) {})
+
+		req := httptest.NewRequest(http.MethodGet, "/nope", nil)
+		mux.ServeHTTP(httptest.NewRecorder(), req)
+
+		span := lastEndedSpan(t, sr)
+		// Exactly the method, so a trailing space fails here
+		is.Equal(t, "GET", span.Name())
+		is.True(t, !oteltest.HasAttributeKey(span.Attributes(), "http.route"), "unexpected http.route attribute")
+	})
+
+	t.Run("names the span with just the method when there is no chi route context at all", func(t *testing.T) {
+		// The middleware is exported, so it can be applied to a handler outside a chi router
+		sr := oteltest.NewSpanRecorder(t)
+
+		h := gluehttp.OpenTelemetry(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/anything", nil))
+
+		span := lastEndedSpan(t, sr)
+		is.Equal(t, "POST", span.Name())
+		is.True(t, !oteltest.HasAttributeKey(span.Attributes(), "http.route"), "unexpected http.route attribute")
+	})
+
 	t.Run("parses user agent attributes", func(t *testing.T) {
 		tests := []struct {
 			name          string

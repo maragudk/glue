@@ -561,3 +561,93 @@ input -- cannot recur here.
 Whether `url.query` should be redacted before export is now the open question in its place. It was
 declined for this round on the grounds that the values are acceptable in this backend, which is a
 statement about today's backend rather than about the data.
+
+## Step 5: Name unmatched spans after the method alone
+
+**Author:** builder (sub-agent)
+
+### Prompt Context
+
+**Verbatim prompt:** Markus wants the `"GET "` span name fixed -- when nothing matches,
+`RoutePattern()` returns `""`, so the span is named with a trailing space and `http.route` is set to
+the empty string. Both are visible in production, where `GET ` is one of the highest-volume span
+names, with `POST ` and `HEAD ` variants. Confirm the requirement-level wording against the pinned
+semconv v1.34.0 rather than the paraphrase, and check whether `chi.RouteContext(ctx).RoutePattern()`
+panics when there is no chi route context, since `OpenTelemetry` is exported and a consuming app can
+apply it to a non-chi handler.
+**Interpretation:** guard the empty route, and settle the nil question by reading rather than
+assuming.
+**Inferred intent:** stop emitting two values that look real in a query but are not.
+
+### What I did
+
+At the bottom of the middleware in `/http/otel.go`, the name and the attribute are now set only
+when there is a route, and the span falls back to the bare method when there is not.
+
+Both halves check out against the pinned spec. From the v1.34.0 HTTP spans document, `http.route` on
+a server span is:
+
+> Conditionally Required If and only if it's available
+
+and on naming:
+
+> HTTP span names SHOULD be `{method} {target}` if there is a (low-cardinality) `target` available.
+> If there is no (low-cardinality) `{target}` available, HTTP span names SHOULD be `{method}`.
+
+So the unmatched case is named `GET`, and `http.route` is absent rather than empty. An empty-string
+route is worse than a missing one precisely because it survives a `GROUP BY` looking like a value.
+
+### Why
+
+An attribute that is present but meaningless is a trap for whoever queries it next, and a span name
+with a trailing space is the same trap in the name field. Neither is a display problem: they are
+both values that a query cannot distinguish from real ones.
+
+### What worked
+
+Writing the tests first caught both symptoms in one run, against the old code:
+
+    otel_test.go:142: Expected "GET", but got "GET " (type string)
+    otel_test.go:154: Expected "POST", but got "POST " (type string)
+
+The tests assert the exact string rather than a prefix or a contains, so a trailing space fails.
+They also assert the absence of `http.route` with `oteltest.HasAttributeKey`, which is the only way
+to tell "absent" from "present and empty" -- `HasAttribute` with an empty value would pass in both
+cases and prove nothing.
+
+### What didn't work
+
+Nothing failed beyond the two expected reds.
+
+### What I learned
+
+**The nil route context does not panic, and no guard is needed.** chi's `RouteContext` returns a
+typed nil `*chi.Context` when the key is absent, and `RoutePattern` is declared on the pointer
+receiver with an explicit nil check as its first statement:
+
+    func (x *Context) RoutePattern() string {
+        if x == nil {
+            return ""
+        }
+
+So a handler wrapped in `OpenTelemetry` outside a chi router gets `""` back, which is exactly the
+unmatched-route case and now takes the same branch. The second test pins that: it applies the
+exported middleware straight to an `http.HandlerFunc` with no router at all, and before the fix it
+returned `"POST "` rather than panicking -- which confirms the read empirically as well. Nothing was
+changed for it.
+
+### What was tricky
+
+Nothing. The only real work was resisting the urge to write a nil guard that chi already has.
+
+### What warrants review
+
+The effect on existing data. Span names `GET `, `POST ` and `HEAD ` collapse to `GET`, `POST` and
+`HEAD`, so anything that groups or filters on the old names with the trailing space stops matching.
+Those spans also lose their empty `http.route`. Nothing is lost for debugging: `url.path` still
+carries the actual path that was requested, which is what you want for a 404 or a bot probe anyway,
+and it is the high-cardinality value that never belonged in the span name.
+
+### Future work
+
+Nothing new.

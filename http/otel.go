@@ -99,9 +99,18 @@ func OpenTelemetry(next http.Handler) http.Handler {
 				span.SetAttributes(attribute.Bool("http.client_disconnected", true))
 			}
 
-			routePattern := chi.RouteContext(r.Context()).RoutePattern()
-			span.SetName(r.Method + " " + routePattern)
-			span.SetAttributes(semconv.HTTPRoute(routePattern))
+			// Semantic conventions want the span named "{method} {route}" where a low-cardinality route
+			// is available and "{method}" alone where it is not, and http.route present if and only if
+			// it is available. Nothing matched means no route, so the name carries no trailing space and
+			// the attribute stays off rather than going out as an empty string which would look like a
+			// real value when grouping. RoutePattern also returns "" for a handler served outside a chi
+			// router, which is the same case.
+			if routePattern := chi.RouteContext(r.Context()).RoutePattern(); routePattern != "" {
+				span.SetName(r.Method + " " + routePattern)
+				span.SetAttributes(semconv.HTTPRoute(routePattern))
+			} else {
+				span.SetName(r.Method)
+			}
 		}),
 		"", // Setting the name here doesn't matter, it's done on the span above
 	)
