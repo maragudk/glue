@@ -153,17 +153,17 @@ func TestOtelResourceOptions(t *testing.T) {
 		is.True(t, oteltest.HasAttribute(r.Attributes(), attribute.String("process.runtime.version", runtime.Version())))
 	})
 
-	t.Run("should have the build time when the binary carries a VCS timestamp", func(t *testing.T) {
+	t.Run("should have the approximate build time when the binary carries a VCS timestamp", func(t *testing.T) {
 		r, err := resource.New(t.Context(), otelResourceOptions("2026-08-21T09:41:00Z")...)
 		is.NotError(t, err)
 
-		is.True(t, oteltest.HasAttribute(r.Attributes(), attribute.String("service.build.time", "2026-08-21T09:41:00Z")))
+		is.True(t, oteltest.HasAttribute(r.Attributes(), attribute.String("service.approx_build_time", "2026-08-21T09:41:00Z")))
 	})
 
-	t.Run("should have no build time at all when the binary carries no VCS timestamp", func(t *testing.T) {
+	t.Run("should have no approximate build time at all when the binary carries no VCS timestamp", func(t *testing.T) {
 		r, err := resource.New(t.Context(), otelResourceOptions("")...)
 		is.NotError(t, err)
 
-		is.True(t, !oteltest.HasAttributeKey(r.Attributes(), "service.build.time"), "expected no service.build.time attribute")
+		is.True(t, !oteltest.HasAttributeKey(r.Attributes(), "service.approx_build_time"), "expected no service.approx_build_time attribute")
 	})
 }

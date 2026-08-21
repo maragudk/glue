@@ -92,8 +92,16 @@ func start(ctx context.Context, log *slog.Logger, name, version, buildTime strin
 }
 
 // otelResourceOptions describing the process and the build it came from, for the OpenTelemetry resource.
-// The build time is left out when it is empty, because a missing attribute is honest, whereas a placeholder
-// value in a timestamp field is not.
+//
+// service.approx_build_time is the value of the vcs.time build setting, which is the commit timestamp of
+// vcs.revision rather than the moment the binary was compiled. It approximates the build time only as
+// closely as the build follows the commit: a pipeline building on merge lands within minutes of it, whereas
+// rebuilding an old commit today reports that commit's old date. Read it as "the code is at least this
+// old", never as "this binary was produced then". It is in RFC 3339 format, as the build setting supplies
+// it.
+//
+// The attribute is left out when there is no timestamp, because a missing attribute is honest, whereas a
+// placeholder value in a timestamp field is not.
 //
 // The detectors carry a newer semantic conventions schema URL than [otelconfig.ConfigureOpenTelemetry] pins
 // on the resource, so merging them yields [resource.ErrSchemaURLConflict], which it tolerates: every
@@ -106,7 +114,7 @@ func otelResourceOptions(buildTime string) []resource.Option {
 	}
 
 	if buildTime != "" {
-		opts = append(opts, resource.WithAttributes(attribute.String("service.build.time", buildTime)))
+		opts = append(opts, resource.WithAttributes(attribute.String("service.approx_build_time", buildTime)))
 	}
 
 	return opts
@@ -124,7 +132,7 @@ func getVersionAndBuildTime() (string, string) {
 
 // versionAndBuildTime from the given build settings.
 // The version is the VCS revision, or "unknown" if the settings carry no such stamp.
-// The build time is the timestamp of that revision in RFC 3339 format, and is empty if the settings carry
+// The build time is the commit timestamp of that revision in RFC 3339 format, and is empty if the settings carry
 // no such stamp. Both need VCS metadata in the build context, so in practice they are stamped together.
 func versionAndBuildTime(settings []debug.BuildSetting) (string, string) {
 	version := "unknown"

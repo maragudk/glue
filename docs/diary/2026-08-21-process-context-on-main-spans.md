@@ -62,8 +62,8 @@ were wrong:
 
 - `http.request.body.size` / `http.response.body.size` were already supplied by otelhttp v0.65.0.
   I proposed adding what was already there.
-- `deployment.environment` is unnecessary here: environments are separated at the backend, so the
-  dimension is already carried out of band.
+- `deployment.environment` is unnecessary here, because the dimension is already carried outside
+  the span data rather than on it.
 - A runtime-metrics snapshot and per-request DB query rollups both wanted background samplers or
   context plumbing -- too much machinery for the value.
 
@@ -107,7 +107,7 @@ Three threads deliberately left out of this round:
 
 - **`url.query.<key>` mints unbounded attribute keys.** Each distinct query parameter name becomes
   a permanent column in the backend, so any bot probing new parameter names pollutes the schema
-  forever. Observed in real telemetry. Left for now.
+  forever. Left for now.
 - **`enduser.pseudo.id` is absent whenever identity does not arrive via the session**, since
   `Authenticate` only reads the session. Applications that authenticate by bearer token get main
   spans with no user attribution.
@@ -158,7 +158,7 @@ In `/app/app.go`, `getVersion` became `getVersionAndBuildTime`, which delegates 
 `versionAndBuildTime([]debug.BuildSetting)` that reads `vcs.revision` and `vcs.time` in one pass.
 The otelconfig call now builds its option slice so that `otelResourceOptions(buildTime)` can
 contribute `resource.WithProcessRuntimeName()`, `resource.WithProcessRuntimeVersion()`, and --
-only when the build time is non-empty -- `service.build.time`. `start` grew a `buildTime`
+only when the build time is non-empty -- `service.approx_build_time`. `start` grew a `buildTime`
 parameter; it is unexported, so no public API changed.
 
 `/http/auth.go` gained `setPermissionsOnRootSpan`, called from both `Authorize` and
@@ -171,7 +171,7 @@ schedulers, tickers and CLI entry points that glue never sees, and those spans n
 attributes or they vanish from any query filtered on main spans. Returning a slice keeps that
 usable at both span start and mid-span without the caller thinking about which.
 
-`service.build.time` is omitted rather than defaulted because a placeholder in a timestamp column
+`service.approx_build_time` is omitted rather than defaulted because a placeholder in a timestamp column
 is worse than a gap: a gap is queryable as absent, whereas `"unknown"` silently poisons any
 comparison. The version keeps its existing `"unknown"` fallback, because changing that was out of
 scope, but the pattern was deliberately not copied to the build time.
@@ -308,11 +308,16 @@ The other agreed findings were smaller and are all addressed:
 Three things the reviewers raised that I deliberately did not change, because they are decisions
 above my pay grade rather than defects:
 
-- **`service.build.time` carries the commit time, not the compile time.** Go documents `vcs.time`
+- **`service.build.time` carried the commit time, not the compile time.** Go documents `vcs.time`
   as the modification time of `vcs.revision`, so rebuilding an old commit today reports the old
   date. One reviewer also noted that `service.*` is an OpenTelemetry-reserved namespace and this key
-  is not a registered convention. Both are fair, and the attribute name was specified in the
-  requirements, so changing it is a call for the requirements to make.
+  is not a registered convention. I raised both rather than renaming a key the requirements named,
+  and Markus ruled: the attribute is now `service.approx_build_time`. It stays in `service.*`
+  deliberately, so it groups with `service.name` and `service.version` where a reader will look for
+  it, and a key like `approx_build_time` is not going to collide with a future convention. Since the
+  name is still not literally precise, the doc comment carries the precision instead -- what the
+  value is, where it comes from, and how far it can drift from the real build time -- written for
+  someone reading the field mid-incident with no context.
 - **`uptime_sec_log_10 == 0` covers everything up to and including one second.** That is forced by
   the "never `-Inf`" requirement, and the sub-second bucket is exactly the crash-loop case. The
   `uptimeAttributes` doc now says so explicitly so nobody misreads bucket zero.
@@ -327,7 +332,7 @@ an alias; `/jobs/runner.go` does, and `glueotel` is used in both call sites for 
 existing `gluehttp` convention. Alternatives considered were `telemetry` and `spans`; `otel` won
 because it sits next to the existing `oteltest` package and reads as its non-test sibling.
 
-Whether `service.build.time` belongs on the resource rather than the span. It is constant for the
+Whether `service.approx_build_time` belongs on the resource rather than the span. It is constant for the
 process lifetime, which is what resources are for, and it rides along on every span without costing
 per-span work.
 
