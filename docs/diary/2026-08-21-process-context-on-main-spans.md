@@ -741,3 +741,60 @@ check it is to re-run the same comparison rather than to read the code.
 
 `go.opentelemetry.io/otel/sdk` is a version behind the API modules. Worth its own bump sometime,
 separately.
+
+### Addendum: the SDK bump
+
+Markus wanted `go.opentelemetry.io/otel/sdk` pulled into this PR rather than left as future work, so
+it went from v1.43.0 to v1.45.0, with `otel/sdk/metric` moving alongside it as a pair. This one is
+riskier than the semconv change, because the SDK builds spans and resources rather than naming
+attributes, so a regression here is silent rather than a compile error.
+
+**The resource attributes still arrive, and I checked rather than inferred.** The concern was the
+known `resource.ErrSchemaURLConflict` interaction: otelconfig pins semconv v1.26.0 on its resource
+while the `resource.WithProcessRuntime*()` detectors carry a newer one, and if the SDK's merge
+behaviour had changed, `process.runtime.name`, `process.runtime.version` and
+`service.approx_build_time` could have stopped arriving with everything still green.
+
+It is worth being precise about why a green run would not have caught it. The `Start` tests assert
+only that `ConfigureOpenTelemetry` returns no error, and the conflict is swallowed rather than
+returned -- so a resource that quietly lost half its attributes would still pass them. The
+assertion that would have caught it lived in `TestOtelResourceOptions`, which was deleted in Step 3
+when the helper it tested was inlined, exactly the coverage loss flagged there under "What warrants
+review".
+
+So I built a throwaway program that ran the real `ConfigureOpenTelemetry` with the same options as
+`start`, captured the `*otelconfig.Config` pointer through a plain `otelconfig.Option` -- the type
+is `func(*Config)` and `Config.Resource` is exported, so the resource it built can be read back
+afterwards -- and printed the result. Run before the bump and again after, the output was identical:
+
+    schema URL: ""
+    resource attributes (9):
+      host.name = ...
+      process.runtime.name = go
+      process.runtime.version = go1.26.5
+      service.approx_build_time = 2026-08-21T09:41:00Z
+      service.name = test
+      service.version = abc123
+      telemetry.sdk.language = go
+      telemetry.sdk.name = otelconfig
+      telemetry.sdk.version = 1.17.0
+
+Nine attributes both times, all six expected keys present, and the schema URL empty in both -- which
+is the conflict being tolerated, visible directly rather than reasoned about. The program was
+deleted afterwards.
+
+The other three risks came back clean. `DefaultAttributeCountLimit` is still 128, and in any case
+the flood test no longer depends on its value: with a single `url.query` attribute the span carries
+the same thirty-odd attributes whether the request has two query parameters or two hundred, so the
+test asserts a structural property rather than a numeric margin. `tracetest.SpanRecorder` is
+unchanged in both API and behaviour, so `oteltest` and everything built on it is unaffected.
+otelconfig was **not** forced forward -- it stays at v1.17.0, and the OTLP exporters stay at
+v1.43.0 -- so the blast radius is no larger than asked for.
+
+Beyond the two SDK modules, the only other movement is `golang.org/x/sys` v0.43.0 to v0.47.0,
+indirectly.
+
+One incidental find: `attribute.Value.Emit` is deprecated in this version in favour of
+`Value.String`. glue does not call it anywhere -- the linter caught it in my throwaway program, not
+in the codebase -- so there is nothing to do, but it is the kind of thing worth knowing before it
+turns up in something that matters.
