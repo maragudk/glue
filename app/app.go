@@ -9,6 +9,8 @@ import (
 	"syscall"
 
 	"github.com/honeycombio/otel-config-go/otelconfig"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/resource"
 	"golang.org/x/sync/errgroup"
 	"maragu.dev/env"
 	"maragu.dev/errors"
@@ -46,12 +48,12 @@ func Start(startCallback StartFunc) {
 	})
 
 	name := env.GetStringOrDefault("APP_NAME", "App")
-	version := getVersion()
+	version, buildTime := getVersionAndBuildTime()
 	log.InfoContext(ctx, "Starting app", "name", name, "version", version)
 
 	// We call the callback so it can return errors and we can handle it just here.
 	// Also makes it easier to test starting the app if needed, because tests don't handle os.Exit well.
-	if err := start(ctx, log, name, version, startCallback); err != nil {
+	if err := start(ctx, log, name, version, buildTime, startCallback); err != nil {
 		log.ErrorContext(ctx, "Error starting app", "name", name, "error", err)
 		os.Exit(1)
 	}
@@ -59,12 +61,17 @@ func Start(startCallback StartFunc) {
 	log.InfoContext(ctx, "Stopped app", "name", name)
 }
 
-func start(ctx context.Context, log *slog.Logger, name, version string, startCallback StartFunc) error {
-	otelShutdown, err := otelconfig.ConfigureOpenTelemetry(
+func start(ctx context.Context, log *slog.Logger, name, version, buildTime string, startCallback StartFunc) error {
+	opts := []otelconfig.Option{
 		otelconfig.WithServiceName(name), otelconfig.WithServiceVersion(version),
 		otelconfig.WithMetricsEnabled(false),
 		otelconfig.WithExporterProtocol(otelconfig.ProtocolHTTPProto), otelconfig.WithExporterEndpoint("https://api.honeycomb.io"),
-	)
+	}
+	for _, opt := range otelResourceOptions(buildTime) {
+		opts = append(opts, otelconfig.WithResourceOption(opt))
+	}
+
+	otelShutdown, err := otelconfig.ConfigureOpenTelemetry(opts...)
 	if err != nil {
 		return errors.Wrap(err, "error configuring open telemetry")
 	}
@@ -84,14 +91,53 @@ func start(ctx context.Context, log *slog.Logger, name, version string, startCal
 	return eg.Wait()
 }
 
-// getVersion from the VCS revision stamped into the build info, or "unknown" if the binary carries no such stamp.
-func getVersion() string {
+// otelResourceOptions describing the process and the build it came from, for the OpenTelemetry resource.
+// The build time is left out when it is empty, because a missing attribute is honest, whereas a placeholder
+// value in a timestamp field is not.
+//
+// The detectors carry a newer semantic conventions schema URL than [otelconfig.ConfigureOpenTelemetry] pins
+// on the resource, so merging them yields [resource.ErrSchemaURLConflict], which it tolerates: every
+// attribute still reaches the resource. The tests for [Start] configure OpenTelemetry for real, so they fail
+// if that ever stops being true.
+func otelResourceOptions(buildTime string) []resource.Option {
+	opts := []resource.Option{
+		resource.WithProcessRuntimeName(),
+		resource.WithProcessRuntimeVersion(),
+	}
+
+	if buildTime != "" {
+		opts = append(opts, resource.WithAttributes(attribute.String("service.build.time", buildTime)))
+	}
+
+	return opts
+}
+
+// getVersionAndBuildTime from the VCS information stamped into the build info.
+// See [versionAndBuildTime] for what the two are.
+func getVersionAndBuildTime() (string, string) {
+	var settings []debug.BuildSetting
 	if info, ok := debug.ReadBuildInfo(); ok {
-		for _, setting := range info.Settings {
-			if setting.Key == "vcs.revision" {
-				return setting.Value
-			}
+		settings = info.Settings
+	}
+	return versionAndBuildTime(settings)
+}
+
+// versionAndBuildTime from the given build settings.
+// The version is the VCS revision, or "unknown" if the settings carry no such stamp.
+// The build time is the timestamp of that revision in RFC 3339 format, and is empty if the settings carry
+// no such stamp. Both need VCS metadata in the build context, so in practice they are stamped together.
+func versionAndBuildTime(settings []debug.BuildSetting) (string, string) {
+	version := "unknown"
+	var buildTime string
+
+	for _, setting := range settings {
+		switch setting.Key {
+		case "vcs.revision":
+			version = setting.Value
+		case "vcs.time":
+			buildTime = setting.Value
 		}
 	}
-	return "unknown"
+
+	return version, buildTime
 }

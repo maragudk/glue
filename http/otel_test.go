@@ -49,7 +49,7 @@ func TestOpenTelemetry(t *testing.T) {
 		}
 	})
 
-	t.Run("sets main attribute", func(t *testing.T) {
+	t.Run("sets main span attributes", func(t *testing.T) {
 		sr := oteltest.NewSpanRecorder(t)
 
 		mux := chi.NewMux()
@@ -61,6 +61,32 @@ func TestOpenTelemetry(t *testing.T) {
 
 		span := lastEndedSpan(t, sr)
 		is.True(t, oteltest.HasAttribute(span.Attributes(), attribute.Bool("main", true)))
+		is.True(t, oteltest.HasAttributeKey(span.Attributes(), "uptime_sec"), "expected uptime_sec attribute")
+		is.True(t, oteltest.HasAttributeKey(span.Attributes(), "uptime_sec_log_10"), "expected uptime_sec_log_10 attribute")
+	})
+
+	t.Run("sets main span attributes even when the handler panics", func(t *testing.T) {
+		// There is no recovery middleware in the chain, so a panicking handler unwinds past the
+		// middleware. The span is still ended and exported, and a panicking request is still a unit
+		// of work, so it has to stay countable.
+		sr := oteltest.NewSpanRecorder(t)
+
+		mux := chi.NewMux()
+		mux.Use(gluehttp.OpenTelemetry)
+		mux.Get("/", func(w http.ResponseWriter, r *http.Request) {
+			panic("the parrot has ceased to be")
+		})
+
+		func() {
+			defer func() {
+				is.True(t, recover() != nil, "expected the panic to reach the caller")
+			}()
+			mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+		}()
+
+		span := lastEndedSpan(t, sr)
+		is.True(t, oteltest.HasAttribute(span.Attributes(), attribute.Bool("main", true)), "expected main attribute")
+		is.True(t, oteltest.HasAttributeKey(span.Attributes(), "uptime_sec"), "expected uptime_sec attribute")
 	})
 
 	t.Run("sets http.route attribute", func(t *testing.T) {
@@ -230,4 +256,22 @@ func lastEndedSpan(t *testing.T, sr interface {
 		t.Fatal("expected at least one ended span")
 	}
 	return spans[len(spans)-1]
+}
+
+// endedSpanNamed returns the ended span with the given name, failing the test if there is no such span.
+func endedSpanNamed(t *testing.T, sr interface {
+	Ended() []sdktrace.ReadOnlySpan
+}, name string) sdktrace.ReadOnlySpan {
+	t.Helper()
+
+	names := make([]string, 0, len(sr.Ended()))
+	for _, span := range sr.Ended() {
+		if span.Name() == name {
+			return span
+		}
+		names = append(names, span.Name())
+	}
+
+	t.Fatalf("no ended span named %v, recorded %v", name, names)
+	return nil
 }

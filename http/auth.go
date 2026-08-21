@@ -137,14 +137,7 @@ func Authorize(log *slog.Logger, pg permissionsGetter, requiredPermissions ...mo
 				return
 			}
 
-			// Add permissions to the root span
-			if rootSpan := GetRootSpanFromContext(ctx); rootSpan != nil && rootSpan.IsRecording() {
-				var permissionStrings []string
-				for _, p := range permissions {
-					permissionStrings = append(permissionStrings, string(p))
-				}
-				rootSpan.SetAttributes(attribute.StringSlice("enduser.permissions", permissionStrings))
-			}
+			setPermissionsOnRootSpan(ctx, permissions)
 
 			hasRequiredPermissions := true
 			for _, requiredPermission := range requiredPermissions {
@@ -191,10 +184,28 @@ func SavePermissionsInContext(log *slog.Logger, pg permissionsGetter) Middleware
 				return
 			}
 
+			setPermissionsOnRootSpan(ctx, permissions)
+
 			ctx = context.WithValue(ctx, contextPermissionsKey, permissions)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// setPermissionsOnRootSpan as the enduser.permissions attribute, if the context carries a recording root
+// span. See [GetRootSpanFromContext].
+func setPermissionsOnRootSpan(ctx context.Context, permissions []model.Permission) {
+	rootSpan := GetRootSpanFromContext(ctx)
+	if rootSpan == nil || !rootSpan.IsRecording() {
+		return
+	}
+
+	permissionStrings := make([]string, 0, len(permissions))
+	for _, p := range permissions {
+		permissionStrings = append(permissionStrings, string(p))
+	}
+
+	rootSpan.SetAttributes(attribute.StringSlice("enduser.permissions", permissionStrings))
 }
 
 func GetPermissionsFromContext(ctx context.Context) []model.Permission {

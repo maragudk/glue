@@ -12,6 +12,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
+
+	glueotel "maragu.dev/glue/otel"
 )
 
 const contextRootSpanKey = ContextKey("rootSpan")
@@ -22,6 +24,10 @@ func OpenTelemetry(next http.Handler) http.Handler {
 			span := trace.SpanFromContext(r.Context())
 			ctx := context.WithValue(r.Context(), contextRootSpanKey, span)
 			r = r.WithContext(ctx)
+
+			// Set before the request is handled, so the span stays countable as a unit of work even
+			// if the handler panics past everything below.
+			span.SetAttributes(glueotel.MainSpanAttributes()...)
 
 			// Parse user agent and add structured attributes
 			ua := useragent.Parse(r.UserAgent())
@@ -99,10 +105,6 @@ func OpenTelemetry(next http.Handler) http.Handler {
 			routePattern := chi.RouteContext(r.Context()).RoutePattern()
 			span.SetName(r.Method + " " + routePattern)
 			span.SetAttributes(semconv.HTTPRoute(routePattern))
-
-			// The idea of a "main" span is from "A Practitioner's Guide to Wide Events":
-			// https://jeremymorrell.dev/blog/a-practitioners-guide-to-wide-events/#:~:text=A%20convention%20to%20filter%20out%20everything%20else
-			span.SetAttributes(attribute.Bool("main", true))
 		}),
 		"", // Setting the name here doesn't matter, it's done on the span above
 	)

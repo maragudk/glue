@@ -9,12 +9,15 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	g "maragu.dev/gomponents"
 	"maragu.dev/is"
 
 	"maragu.dev/glue/html"
 	gluehttp "maragu.dev/glue/http"
 	"maragu.dev/glue/model"
+	"maragu.dev/glue/oteltest"
 )
 
 type mockSessionManager struct {
@@ -297,6 +300,127 @@ func TestSavePermissionsInContext(t *testing.T) {
 			is.Equal(t, test.expectStatus, rec.Code)
 			is.Equal(t, test.expectNextHandlerCalled, called)
 			is.EqualSlice(t, test.permissions, permissions)
+		})
+	}
+}
+
+// TestPermissionsOnRootSpan runs the same table against each middleware which fetches permissions.
+func TestPermissionsOnRootSpan(t *testing.T) {
+	tests := []struct {
+		name       string
+		middleware func(pg *mockPermissionsGetter) gluehttp.Middleware
+	}{
+		{
+			name: "Authorize",
+			middleware: func(pg *mockPermissionsGetter) gluehttp.Middleware {
+				return gluehttp.Authorize(slog.New(slog.DiscardHandler), pg, "read")
+			},
+		},
+		{
+			name: "SavePermissionsInContext",
+			middleware: func(pg *mockPermissionsGetter) gluehttp.Middleware {
+				return gluehttp.SavePermissionsInContext(slog.New(slog.DiscardHandler), pg)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name+" should set the permissions on the root span", func(t *testing.T) {
+			sr := oteltest.NewSpanRecorder(t)
+
+			pg := &mockPermissionsGetter{permissions: []model.Permission{"read", "write"}}
+
+			ctx, rootSpan := otel.Tracer("test").Start(t.Context(), "root")
+			userID := model.UserID("u_123")
+			ctx = context.WithValue(ctx, gluehttp.ContextKey("userID"), &userID)
+			ctx = context.WithValue(ctx, gluehttp.ContextKey("rootSpan"), rootSpan)
+
+			var called bool
+			h := test.middleware(pg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+			}))
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
+			rootSpan.End()
+
+			is.True(t, called)
+
+			attrs := endedSpanNamed(t, sr, "root").Attributes()
+			is.True(t, oteltest.HasAttribute(attrs, attribute.StringSlice("enduser.permissions", []string{"read", "write"})),
+				"expected enduser.permissions on the root span")
+		})
+
+		t.Run(test.name+" should set an empty permissions attribute for a user with no permissions", func(t *testing.T) {
+			sr := oteltest.NewSpanRecorder(t)
+
+			pg := &mockPermissionsGetter{permissions: []model.Permission{}}
+
+			ctx, rootSpan := otel.Tracer("test").Start(t.Context(), "root")
+			userID := model.UserID("u_123")
+			ctx = context.WithValue(ctx, gluehttp.ContextKey("userID"), &userID)
+			ctx = context.WithValue(ctx, gluehttp.ContextKey("rootSpan"), rootSpan)
+
+			h := test.middleware(pg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
+			rootSpan.End()
+
+			// An empty list means "we looked and there were none", which is not the same as never looking
+			attrs := endedSpanNamed(t, sr, "root").Attributes()
+			is.True(t, oteltest.HasAttribute(attrs, attribute.StringSlice("enduser.permissions", nil)),
+				"expected an empty enduser.permissions on the root span")
+		})
+
+		t.Run(test.name+" should set no permissions on a root span which is not recording", func(t *testing.T) {
+			sr := oteltest.NewSpanRecorder(t)
+
+			pg := &mockPermissionsGetter{permissions: []model.Permission{"read", "write"}}
+
+			ctx, rootSpan := otel.Tracer("test").Start(t.Context(), "root")
+			rootSpan.End()
+
+			userID := model.UserID("u_123")
+			ctx = context.WithValue(ctx, gluehttp.ContextKey("userID"), &userID)
+			ctx = context.WithValue(ctx, gluehttp.ContextKey("rootSpan"), rootSpan)
+
+			h := test.middleware(pg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
+
+			attrs := endedSpanNamed(t, sr, "root").Attributes()
+			is.True(t, !oteltest.HasAttributeKey(attrs, "enduser.permissions"),
+				"expected no enduser.permissions on a span which had already ended")
+		})
+
+		t.Run(test.name+" should set no permissions on the root span when there is no user", func(t *testing.T) {
+			sr := oteltest.NewSpanRecorder(t)
+
+			pg := &mockPermissionsGetter{permissions: []model.Permission{"read", "write"}}
+
+			ctx, rootSpan := otel.Tracer("test").Start(t.Context(), "root")
+			ctx = context.WithValue(ctx, gluehttp.ContextKey("rootSpan"), rootSpan)
+
+			h := test.middleware(pg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
+			rootSpan.End()
+
+			attrs := endedSpanNamed(t, sr, "root").Attributes()
+			is.True(t, !oteltest.HasAttributeKey(attrs, "enduser.permissions"),
+				"expected no enduser.permissions on the root span")
+		})
+
+		t.Run(test.name+" should not panic when there is no root span", func(t *testing.T) {
+			oteltest.NewSpanRecorder(t)
+
+			pg := &mockPermissionsGetter{permissions: []model.Permission{"read", "write"}}
+
+			userID := model.UserID("u_123")
+			ctx := context.WithValue(t.Context(), gluehttp.ContextKey("userID"), &userID)
+
+			var called bool
+			h := test.middleware(pg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+			}))
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
+
+			is.True(t, called)
 		})
 	}
 }

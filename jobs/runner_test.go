@@ -6,12 +6,14 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 	"maragu.dev/is"
 
 	"maragu.dev/glue/jobs"
+	"maragu.dev/glue/oteltest"
 )
 
 type TestPayload struct {
@@ -197,4 +199,21 @@ func TestWithTracing(t *testing.T) {
 		is.Equal(t, "Re: Re: Re: quick question", unmarshaled.Subject)
 	})
 
+	t.Run("should set the main span attributes", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		// The tracer is taken from the tracer provider when the handler is created, so create it after the recorder
+		handler := jobs.WithTracing("test-operation", func(ctx context.Context, m []byte) error {
+			return nil
+		})
+
+		err := handler(t.Context(), []byte(`{"parrot":"resting"}`))
+		is.NotError(t, err)
+
+		spans := sr.Ended()
+		is.Equal(t, 1, len(spans))
+		is.True(t, oteltest.HasAttribute(spans[0].Attributes(), attribute.Bool("main", true)), "expected main attribute")
+		is.True(t, oteltest.HasAttributeKey(spans[0].Attributes(), "uptime_sec"), "expected uptime_sec attribute")
+		is.True(t, oteltest.HasAttributeKey(spans[0].Attributes(), "uptime_sec_log_10"), "expected uptime_sec_log_10 attribute")
+	})
 }
