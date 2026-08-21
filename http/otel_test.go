@@ -2,6 +2,7 @@ package http_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -89,6 +90,29 @@ func TestOpenTelemetry(t *testing.T) {
 		is.True(t, oteltest.HasAttributeKey(span.Attributes(), "uptime_sec"), "expected uptime_sec attribute")
 	})
 
+	t.Run("keeps the main span attributes when the request carries a flood of query parameters", func(t *testing.T) {
+		// The SDK caps a span at 128 attributes by default and drops everything past it, so a request
+		// which mints one attribute per query parameter could push main and http.route off the span.
+		sr := oteltest.NewSpanRecorder(t)
+
+		mux := chi.NewMux()
+		mux.Use(gluehttp.OpenTelemetry)
+		mux.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {})
+
+		params := make([]string, 0, 200)
+		for i := range 200 {
+			params = append(params, fmt.Sprintf("p%v=v%v", i, i))
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/things/42?"+strings.Join(params, "&"), nil)
+		mux.ServeHTTP(httptest.NewRecorder(), req)
+
+		span := lastEndedSpan(t, sr)
+		is.True(t, oteltest.HasAttribute(span.Attributes(), attribute.Bool("main", true)), "expected main attribute")
+		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.HTTPRoute("/things/{id}")), "expected http.route attribute")
+		is.True(t, oteltest.HasAttributeKey(span.Attributes(), "url.query"), "expected url.query attribute")
+	})
+
 	t.Run("sets http.route attribute", func(t *testing.T) {
 		sr := oteltest.NewSpanRecorder(t)
 
@@ -158,36 +182,33 @@ func TestOpenTelemetry(t *testing.T) {
 		}
 	})
 
-	t.Run("adds query parameters as attributes with lowercased keys", func(t *testing.T) {
+	t.Run("sets the query string as a single attribute", func(t *testing.T) {
 		sr := oteltest.NewSpanRecorder(t)
 
 		mux := chi.NewMux()
 		mux.Use(gluehttp.OpenTelemetry)
 		mux.Get("/search", func(w http.ResponseWriter, r *http.Request) {})
 
-		req := httptest.NewRequest(http.MethodGet, "/search?q=hello&PageSize=10", nil)
+		// Q and q are different parameters, which one attribute per key could not represent
+		req := httptest.NewRequest(http.MethodGet, "/search?q=hello&Q=goodbye&PageSize=10", nil)
 		mux.ServeHTTP(httptest.NewRecorder(), req)
 
 		span := lastEndedSpan(t, sr)
-		attrs := span.Attributes()
-		is.True(t, oteltest.HasAttribute(attrs, attribute.StringSlice("url.query.q", []string{"hello"})))
-		is.True(t, oteltest.HasAttribute(attrs, attribute.StringSlice("url.query.pagesize", []string{"10"})))
+		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.URLQuery("q=hello&Q=goodbye&PageSize=10")))
 	})
 
-	t.Run("does not add query attributes when no query parameters", func(t *testing.T) {
+	t.Run("sets no query attribute when there is no query string", func(t *testing.T) {
 		sr := oteltest.NewSpanRecorder(t)
 
 		mux := chi.NewMux()
 		mux.Use(gluehttp.OpenTelemetry)
-		mux.Get("/", func(w http.ResponseWriter, r *http.Request) {})
+		mux.Get("/search", func(w http.ResponseWriter, r *http.Request) {})
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/search", nil)
 		mux.ServeHTTP(httptest.NewRecorder(), req)
 
 		span := lastEndedSpan(t, sr)
-		for _, attr := range span.Attributes() {
-			is.True(t, !strings.HasPrefix(string(attr.Key), "url.query."), "unexpected query attribute")
-		}
+		is.True(t, !oteltest.HasAttributeKey(span.Attributes(), "url.query"), "unexpected url.query attribute")
 	})
 
 	t.Run("sets client disconnected attribute when the request context is canceled", func(t *testing.T) {

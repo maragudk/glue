@@ -458,3 +458,106 @@ inlining the options removed the only place a test could stand.
 ### Future work
 
 Nothing new.
+
+## Step 4: Replace the per-parameter query attributes
+
+**Author:** builder (sub-agent)
+
+### Prompt Context
+
+**Verbatim prompt:** after a research pass on query-parameter capture, the coordinator relayed one
+more change for PR #194: delete the block minting one attribute per query parameter and replace it
+with the standard single `url.query` string from `r.URL.RawQuery`, set near the top of the
+middleware, with no sanitization or redaction.
+**Interpretation:** adopt the semantic convention, drop the bespoke shape, and place it where a
+panicking handler cannot lose it.
+**Inferred intent:** stop instrumentation code from inventing column names, which is a schema
+problem and a security problem before it is a correctness one.
+
+### What I did
+
+Deleted the loop over `r.URL.Query()` in `/http/otel.go` and replaced it with a single
+`semconv.URLQuery(r.URL.RawQuery)`, guarded on a non-empty query because semantic conventions mark
+`url.query` conditionally required -- present if and only if a query was received, never an empty
+string. It sits next to the `MainSpanAttributes` call at the top of the middleware, since
+`RawQuery` needs no routing and there is no reason for it to be lost when a handler panics.
+
+No sanitization, no allowlist, no denylist, no configuration. That was considered and declined.
+
+### Why
+
+Three reasons, none of them mine.
+
+`url.query.<key>` has no basis in OpenTelemetry. The URL registry defines thirteen `url.*`
+attributes and not one of them is templated per parameter. `url.query` is a single string, Stable,
+and conditionally required on HTTP server spans, so glue was simultaneously emitting a shape that
+does not exist and omitting the one that does.
+
+Honeycomb's guidance on organizing data says not to set field names dynamically from instrumentation
+code, warns that it leads to runaway schemas and column-creation throttling, and calls sending
+unsanitized user input as a field name particularly dangerous. Live production bore that out: 338
+columns, roughly 272 of them `url.query.*`, including column names containing spaces, backslashes
+and invalid UTF-8 from remote-code-execution probe strings. Every bot probing a new parameter name
+was minting a permanent column.
+
+No mainstream instrumentation decomposes the query. otelhttp captures none of it; the Java and
+Python implementations capture a single string.
+
+### What worked
+
+The attribute-limit claim came to me flagged as inference from a documented limit rather than
+something verified, with a suggestion to test it if cheap. It was cheap, and it is real.
+
+Writing the test against the old code first, a request with 200 query parameters produced:
+
+    --- FAIL: TestOpenTelemetry/keeps_the_main_span_attributes_when_the_request_carries_a_flood_of_query_parameters
+        otel_test.go:112: Not true
+        otel_test.go:112: expected http.route attribute
+
+So the exposure was genuine and remotely triggerable by anyone able to put parameters in a URL. The
+Go SDK caps a span at 128 attributes by default, otelconfig does not raise it, and the main span
+already carries thirty to forty attributes before any query. Past the cap the SDK drops what arrives
+last, which is why `http.route` -- set at the bottom of the middleware after routing -- went first.
+
+`main` survived, and only by luck of timing: it survived because the previous review round had
+already moved it to the top of the middleware to fix the panic case. Before that move it was set two
+lines above `http.route` and would have gone the same way, taking the request out of every query
+that filters on main spans. Two independent fixes turned out to protect the same attribute.
+
+The test is kept, and now passes for the real reason rather than the accidental one: with a single
+`url.query` attribute the count cannot grow with the request at all.
+
+### What didn't work
+
+Nothing failed. The change is a deletion plus three lines.
+
+### What I learned
+
+The old code had a second defect nobody had gone looking for. It lowercased the parameter name to
+build the attribute key, but query strings are case-sensitive, so `?Q=a&q=b` produced two attributes
+both named `url.query.q`, and `SetAttributes` is last-write-wins. One of the two values was silently
+dropped, with nothing anywhere to say which. The replacement cannot have that problem, since
+`RawQuery` is the query exactly as it arrived, and the new test pins it with a `q` and a `Q` in the
+same request.
+
+### What was tricky
+
+Only the placement question, and it answers itself once asked: everything the attribute needs is on
+the request at entry, so the only argument for setting it late was that the code it replaced
+happened to live there.
+
+### What warrants review
+
+That no redaction is a deliberate, current-backend-specific call rather than an oversight. A
+password or token in a query string now lands in telemetry as one string instead of as one
+column, which is better for the schema and no better for the secret.
+
+### Future work
+
+This retires the first bullet in Step 1's future work, which listed `url.query.<key>` as knowingly
+deferred. It is done, and the underlying problem -- instrumentation minting column names from user
+input -- cannot recur here.
+
+Whether `url.query` should be redacted before export is now the open question in its place. It was
+declined for this round on the grounds that the values are acceptable in this backend, which is a
+statement about today's backend rather than about the data.

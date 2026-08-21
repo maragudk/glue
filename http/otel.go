@@ -29,6 +29,12 @@ func OpenTelemetry(next http.Handler) http.Handler {
 			// if the handler panics past everything below.
 			span.SetAttributes(glueotel.MainSpanAttributes()...)
 
+			// Semantic conventions make url.query conditionally required, so it is set only when the
+			// request actually carried a query, never as an empty string.
+			if r.URL.RawQuery != "" {
+				span.SetAttributes(semconv.URLQuery(r.URL.RawQuery))
+			}
+
 			// Parse user agent and add structured attributes
 			ua := useragent.Parse(r.UserAgent())
 
@@ -83,15 +89,6 @@ func OpenTelemetry(next http.Handler) http.Handler {
 			// Add specific device if available using semconv helper
 			if ua.Device != "" {
 				span.SetAttributes(semconv.DeviceModelName(ua.Device))
-			}
-
-			// Add URL query parameters as individual attributes for easier searching
-			if len(r.URL.Query()) > 0 {
-				attrs := make([]attribute.KeyValue, 0, len(r.URL.Query()))
-				for key, values := range r.URL.Query() {
-					attrs = append(attrs, attribute.StringSlice("url.query."+strings.ToLower(key), values))
-				}
-				span.SetAttributes(attrs...)
 			}
 
 			next.ServeHTTP(w, r)
