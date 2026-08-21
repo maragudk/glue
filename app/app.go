@@ -62,6 +62,10 @@ func Start(startCallback StartFunc) {
 }
 
 func start(ctx context.Context, log *slog.Logger, name, version, buildTime string, startCallback StartFunc) error {
+	if err := raiseSpanAttributeCountLimit(); err != nil {
+		return err
+	}
+
 	otelShutdown, err := otelconfig.ConfigureOpenTelemetry(
 		otelconfig.WithServiceName(name), otelconfig.WithServiceVersion(version),
 		otelconfig.WithMetricsEnabled(false),
@@ -89,6 +93,30 @@ func start(ctx context.Context, log *slog.Logger, name, version, buildTime strin
 	log.InfoContext(ctx, "Stopping app", "name", name)
 
 	return eg.Wait()
+}
+
+// raiseSpanAttributeCountLimit above the SDK default of 128, which is a low ceiling for wide events:
+// a main span carries dozens of attributes before an application adds any of its own, so the default
+// acts as a design constraint rather than the runaway backstop it is meant to be. Attributes cost
+// nothing until they exist, and the backend accepts far more than this per event.
+//
+// This goes through the environment rather than a span limits option because
+// [otelconfig.ConfigureOpenTelemetry] exposes none: it builds its tracer provider from its own
+// config, which has no field for limits, so there is nowhere to pass one. The environment variable
+// is the SDK's documented alternative, read when the provider is constructed.
+//
+// An operator who sets either key keeps their value. The SDK reads the span-specific key first and
+// falls back to the general one, and counts an empty value as unset, so both are checked that way here.
+func raiseSpanAttributeCountLimit() error {
+	if os.Getenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT") != "" || os.Getenv("OTEL_ATTRIBUTE_COUNT_LIMIT") != "" {
+		return nil
+	}
+
+	if err := os.Setenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", "512"); err != nil {
+		return errors.Wrap(err, "error setting span attribute count limit")
+	}
+
+	return nil
 }
 
 // getVersionAndBuildTime from the VCS information stamped into the build info.

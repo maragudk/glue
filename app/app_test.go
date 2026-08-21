@@ -3,10 +3,15 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"os"
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"maragu.dev/is"
 )
 
@@ -95,5 +100,60 @@ func TestGetVersionAndBuildTime(t *testing.T) {
 		version, buildTime := getVersionAndBuildTime()
 		is.True(t, version != "")
 		is.True(t, buildTime != "")
+	})
+}
+
+func TestRaiseSpanAttributeCountLimit(t *testing.T) {
+	t.Run("should raise the limit when the operator has set neither key", func(t *testing.T) {
+		// Clearing both also undoes any value left behind by another test which called start
+		t.Setenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", "")
+		t.Setenv("OTEL_ATTRIBUTE_COUNT_LIMIT", "")
+
+		is.NotError(t, raiseSpanAttributeCountLimit())
+		is.Equal(t, "512", os.Getenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT"))
+	})
+
+	t.Run("should keep the operator's value for the span specific key", func(t *testing.T) {
+		t.Setenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", "64")
+		t.Setenv("OTEL_ATTRIBUTE_COUNT_LIMIT", "")
+
+		is.NotError(t, raiseSpanAttributeCountLimit())
+		is.Equal(t, "64", os.Getenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT"))
+	})
+
+	t.Run("should keep the operator's value for the general key, which the SDK also honours", func(t *testing.T) {
+		t.Setenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", "")
+		t.Setenv("OTEL_ATTRIBUTE_COUNT_LIMIT", "64")
+
+		is.NotError(t, raiseSpanAttributeCountLimit())
+		// Setting the span specific key here would silently beat the operator, since the SDK reads it first
+		is.Equal(t, "", os.Getenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT"))
+	})
+
+	t.Run("should let a span keep more than the default 128 attributes once raised", func(t *testing.T) {
+		// Proves the variable this writes still means what it is written for. A provider reads the
+		// limit when it is constructed, so it has to be built after the variable is set.
+		t.Setenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", "")
+		t.Setenv("OTEL_ATTRIBUTE_COUNT_LIMIT", "")
+		is.NotError(t, raiseSpanAttributeCountLimit())
+
+		sr := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+		t.Cleanup(func() {
+			_ = tp.Shutdown(context.WithoutCancel(t.Context()))
+		})
+
+		attrs := make([]attribute.KeyValue, 0, 300)
+		for i := range 300 {
+			attrs = append(attrs, attribute.Int(fmt.Sprint("attr", i), i))
+		}
+
+		_, span := tp.Tracer("test").Start(t.Context(), "wide")
+		span.SetAttributes(attrs...)
+		span.End()
+
+		spans := sr.Ended()
+		is.Equal(t, 1, len(spans))
+		is.Equal(t, 300, len(spans[0].Attributes()))
 	})
 }

@@ -798,3 +798,106 @@ One incidental find: `attribute.Value.Emit` is deprecated in this version in fav
 `Value.String`. glue does not call it anywhere -- the linter caught it in my throwaway program, not
 in the codebase -- so there is nothing to do, but it is the kind of thing worth knowing before it
 turns up in something that matters.
+
+## Step 7: Raise the span attribute count limit to 512
+
+**Author:** builder (sub-agent)
+
+### Prompt Context
+
+**Verbatim prompt:** raise the span attribute count limit from the SDK default of 128 to 512. The
+default is the binding constraint on wide events -- glue's own main span carries 30-40 attributes
+before an app adds anything, the user-agent block alone about 15 -- while the backend accepts 2,000
+fields per event, so 512 is still conservative and the limit should be a runaway backstop rather
+than a design constraint. The clean route would be a span limits option on the tracer provider, but
+otelconfig may not expose one; confirm that before falling back to the environment variable, only
+set it when unset so an operator wins, and comment why a library writes to the process environment.
+**Interpretation:** find the supported route if there is one, otherwise take the documented
+alternative and make the reason legible.
+**Inferred intent:** stop a default nobody chose from deciding how wide an event can be.
+
+### What I did
+
+Confirmed there is no supported route through otelconfig, then added `raiseSpanAttributeCountLimit`
+to `/app/app.go`, called at the top of `start` before `ConfigureOpenTelemetry`. It sets
+`OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT` to 512, and only when the operator has set neither that key nor
+the general `OTEL_ATTRIBUTE_COUNT_LIMIT`. Only the attribute count moved; event count, link count,
+per-event and per-link attribute counts and attribute value length all stay at their defaults.
+
+**otelconfig genuinely has no option for this.** Its twenty-six `With*` options cover endpoints,
+headers, protocols, resource options, propagators, samplers, span processors and shutdown, and
+nothing else. More conclusively, `pipelines.NewTracePipeline` assembles the provider options itself
+from `Config` -- `WithResource`, `WithSampler`, then the span processors -- and `Config` has no
+field for limits, so there is nowhere for a caller to pass one even indirectly. The environment
+variable is the only route.
+
+### Why
+
+The variable is not a hack around the SDK, it is the SDK's own configuration surface:
+`trace.NewTracerProvider` calls `NewSpanLimits()` when it constructs the provider, which reads the
+variable through `env.SpanAttributeCount`. Setting it before `ConfigureOpenTelemetry` means the
+provider otelconfig builds picks it up exactly as if the option had been passed. It is written down
+in the function's doc comment, because a library writing to the process environment deserves an
+explanation at the point where a reader will ask for one.
+
+### What worked
+
+Checking both keys rather than one turned out to matter. The SDK resolves the limit with
+`firstInt(default, SpanAttributeCountKey, AttributeCountKey)`, so the span-specific key beats the
+general one. Had glue set only the specific key when only the specific key was unset, an operator
+who had set the general `OTEL_ATTRIBUTE_COUNT_LIMIT` would have been silently overridden by the
+framework -- precisely the precedence the requirement rules out. Checking both preserves it, and one
+of the tests pins that case on its own.
+
+Reading the SDK's notion of "unset" was worth the minute it took as well: `firstInt` skips a key
+whose value is the empty string, so glue treats empty as unset too, and the two agree rather than
+disagreeing at an edge.
+
+### What didn't work
+
+Nothing failed.
+
+### What I learned
+
+The test question the brief flagged -- not writing something that passes for the wrong reason -- had
+a sharper answer than expected. The suspicion was that `oteltest`'s recorder would not pick up the
+variable. It does, because it builds its provider with `sdktrace.NewTracerProvider`, which reads the
+limit at construction like any other provider. So the trap was not that the test could not see the
+effect; it was that a test could assert 300 attributes survive and pass whether or not glue had done
+anything at all.
+
+So I ran the control. With the raise removed and everything else identical:
+
+    app_test.go:156: Expected "300", but got "128" (type int)
+
+Exactly 128, truncated. With the raise, 300. The test therefore proves the mechanism has the effect,
+not merely that the SDK can hold 300 attributes.
+
+The tests split cleanly by what they actually establish. Three of them are about glue's own
+behaviour and cannot pass for the wrong reason: the limit is raised when neither key is set, and the
+operator's value survives whichever of the two keys it was set on. The fourth is about the mechanism
+rather than about glue -- it pins that the variable glue writes still means what glue writes it for,
+which is the failure mode a renamed or retired key would produce, where the first three would stay
+green while the limit silently reverted to 128.
+
+### What was tricky
+
+The tests mutate process-wide state, and `start` now does too. Any subtest calling `start` leaves
+the variable set behind it, and with `-shuffle on` that could have made the "raise it when unset"
+case pass or fail depending on order. Every subtest therefore clears both keys with `t.Setenv`
+first, which both removes a leaked value and registers the restore, so the cases are order
+independent in either direction. Ran the suite under `-shuffle on` and the race detector to confirm.
+
+### What warrants review
+
+That 512 belongs in code rather than in deployment configuration. It is a framework default an
+operator can override, which is the right shape, but it is still a number chosen once and compiled
+in.
+
+### Future work
+
+This connects back to the flood test from Step 4. The 128 default was what let a query-parameter
+flood evict `http.route` from the main span, and that is fixed at the source, since a single
+`url.query` attribute cannot grow with the request. Raising the ceiling is defence in depth for the
+same class of problem rather than the fix for it: it buys room for attributes that are supposed to
+be there, and would not save a span from instrumentation that mints attributes without bound.
