@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"time"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	g "maragu.dev/gomponents"
@@ -45,16 +45,20 @@ type userActiveChecker interface {
 // If there is no session, the middleware does nothing and just calls the next handler.
 // If there is no user (anymore) but the ID is in the session, or the user is inactive, the middleware destroys the session and calls the next handler.
 func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveChecker) Middleware {
-	tracer := otel.Tracer("maragu.dev/glue/http")
-
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx, span := tracer.Start(r.Context(), "http.Authenticate")
-			defer span.End()
-			r = r.WithContext(ctx)
+			ctx := r.Context()
+
+			// Timed up to the point this hands off or gives up, so it covers this middleware's own work
+			// and never the handlers below it
+			start := time.Now()
+			done := func() {
+				setRootSpanDuration(ctx, "authn.duration_ms", time.Since(start))
+			}
 
 			// If there is no session, do nothing and call the next handler
 			if !sgd.Exists(ctx, SessionUserIDKey) {
+				done()
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -66,16 +70,21 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 				if errors.Is(err, model.ErrorUserNotFound) {
 					if err := sgd.Destroy(ctx); err != nil {
 						log.InfoContext(ctx, "Error destroying session for nonexistent user", "error", err, "userID", userID)
+						done()
+						recordErrorOnRootSpan(ctx, err, "error destroying session after authentication")
 						http.Error(w, "error destroying session after authentication", http.StatusInternalServerError)
 						return
 					}
 
 					// The invalid session is destroyed, and the request can continue
+					done()
 					next.ServeHTTP(w, r)
 					return
 				}
 
 				log.InfoContext(ctx, "Error getting user after authentication", "error", err, "userID", userID)
+				done()
+				recordErrorOnRootSpan(ctx, err, "error getting user after authentication")
 				http.Error(w, "error getting user after authentication", http.StatusInternalServerError)
 				return
 			}
@@ -84,10 +93,13 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 			if !active {
 				if err := sgd.Destroy(ctx); err != nil {
 					log.InfoContext(ctx, "Error destroying session for inactive user", "error", err, "userID", userID)
+					done()
+					recordErrorOnRootSpan(ctx, err, "error destroying session after authentication")
 					http.Error(w, "error destroying session after authentication", http.StatusInternalServerError)
 					return
 				}
 
+				done()
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -97,9 +109,10 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 				rootSpan.SetAttributes(semconv.EnduserPseudoID(string(userID)))
 			}
 
+			done()
+
 			// Store the user directly in the request context instead of having to use the session manager
-			ctx = context.WithValue(ctx, contextUserIDKey, &userID)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, contextUserIDKey, &userID)))
 		})
 	}
 }
@@ -115,17 +128,21 @@ func GetUserIDFromContext(ctx context.Context) *model.UserID {
 }
 
 func Authorize(log *slog.Logger, pg permissionsGetter, requiredPermissions ...model.Permission) Middleware {
-	tracer := otel.Tracer("maragu.dev/glue/http")
-
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx, span := tracer.Start(r.Context(), "http.Authorize")
-			defer span.End()
-			r = r.WithContext(ctx)
+			ctx := r.Context()
+
+			// Timed up to the point this hands off or gives up, so it covers this middleware's own work
+			// and never the handlers below it
+			start := time.Now()
+			done := func() {
+				setRootSpanDuration(ctx, "authz.duration_ms", time.Since(start))
+			}
 
 			userID := GetUserIDFromContext(ctx)
 
 			if userID == nil {
+				done()
 				http.Redirect(w, r, "/login?redirect="+url.QueryEscape(r.URL.Path), http.StatusTemporaryRedirect)
 				return
 			}
@@ -133,6 +150,8 @@ func Authorize(log *slog.Logger, pg permissionsGetter, requiredPermissions ...mo
 			permissions, err := pg.GetPermissions(ctx, *userID)
 			if err != nil {
 				log.InfoContext(ctx, "Error getting permissions", "error", err, "userID", userID)
+				done()
+				recordErrorOnRootSpan(ctx, err, "error getting permissions")
 				http.Error(w, "error getting permissions", http.StatusInternalServerError)
 				return
 			}
@@ -148,10 +167,12 @@ func Authorize(log *slog.Logger, pg permissionsGetter, requiredPermissions ...mo
 			}
 
 			if !hasRequiredPermissions {
+				done()
 				http.Error(w, "unauthorized", http.StatusForbidden)
 				return
 			}
 
+			done()
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -162,17 +183,21 @@ type permissionsGetter interface {
 }
 
 func SavePermissionsInContext(log *slog.Logger, pg permissionsGetter) Middleware {
-	tracer := otel.Tracer("maragu.dev/glue/http")
-
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx, span := tracer.Start(r.Context(), "http.SavePermissionsInContext")
-			defer span.End()
-			r = r.WithContext(ctx)
+			ctx := r.Context()
+
+			// Timed up to the point this hands off or gives up, so it covers this middleware's own work
+			// and never the handlers below it
+			start := time.Now()
+			done := func() {
+				setRootSpanDuration(ctx, "permissions.duration_ms", time.Since(start))
+			}
 
 			userID := GetUserIDFromContext(ctx)
 
 			if userID == nil {
+				done()
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -180,14 +205,16 @@ func SavePermissionsInContext(log *slog.Logger, pg permissionsGetter) Middleware
 			permissions, err := pg.GetPermissions(ctx, *userID)
 			if err != nil {
 				log.ErrorContext(ctx, "Error getting permissions", "error", err, "userID", userID)
+				done()
+				recordErrorOnRootSpan(ctx, err, "error getting permissions")
 				http.Error(w, "error getting permissions", http.StatusInternalServerError)
 				return
 			}
 
 			setPermissionsOnRootSpan(ctx, permissions)
 
-			ctx = context.WithValue(ctx, contextPermissionsKey, permissions)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			done()
+			next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, contextPermissionsKey, permissions)))
 		})
 	}
 }

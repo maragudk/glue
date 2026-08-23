@@ -5,11 +5,13 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/mileusna/useragent"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
@@ -141,4 +143,32 @@ func GetRootSpanFromContext(ctx context.Context) trace.Span {
 		return nil
 	}
 	return span.(trace.Span)
+}
+
+// setRootSpanDuration as an attribute in milliseconds, if the context carries a recording root span.
+// Milliseconds as a float, because the segments being measured are routinely well under one millisecond
+// and an integer would report most of them as zero. Each key names the segment it covers, because
+// duration_ms is already the whole span, and a segment that reads like the total invites subtracting one
+// from the other.
+func setRootSpanDuration(ctx context.Context, key string, d time.Duration) {
+	rootSpan := GetRootSpanFromContext(ctx)
+	if rootSpan == nil || !rootSpan.IsRecording() {
+		return
+	}
+
+	rootSpan.SetAttributes(attribute.Float64(key, float64(d.Nanoseconds())/float64(time.Millisecond)))
+}
+
+// recordErrorOnRootSpan with the given description, if the context carries a recording root span.
+// This is for errors raised by this package's own middleware, which fail the request before any
+// application code runs and so are invisible to it. Errors from an application's own handlers are its
+// own to record.
+func recordErrorOnRootSpan(ctx context.Context, err error, description string) {
+	rootSpan := GetRootSpanFromContext(ctx)
+	if rootSpan == nil || !rootSpan.IsRecording() {
+		return
+	}
+
+	rootSpan.RecordError(err)
+	rootSpan.SetStatus(codes.Error, description)
 }

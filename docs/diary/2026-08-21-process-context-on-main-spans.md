@@ -901,3 +901,121 @@ flood evict `http.route` from the main span, and that is fixed at the source, si
 `url.query` attribute cannot grow with the request. Raising the ceiling is defence in depth for the
 same class of problem rather than the fix for it: it buys room for attributes that are supposed to
 be there, and would not save a span from instrumentation that mints attributes without bound.
+
+## Step 8: Replace four empty spans with timing attributes
+
+**Author:** builder (sub-agent)
+
+### Prompt Context
+
+**Verbatim prompt:** four span types carry zero attributes beyond the common floor --
+`http.Handler`, `http.Authenticate`, `http.Authorize` and `http.SavePermissionsInContext` -- each just
+`Start`, `defer End`, call next. Together about 231,728 spans in 7 days in one production dataset,
+with `http.Handler` the single highest-volume span name in the environment. Replace them with
+`handler.duration_ms`, `authn.duration_ms`, `authz.duration_ms` and `permissions.duration_ms` on the
+main span, as float64 milliseconds. Separately, there is not one `RecordError` call anywhere in the
+`http` package, so auth failures reach a log line and a 500 and vanish from traces; start recording
+them. Keep `TracingMux`. Watch for double-writes. Do not touch `adaptPage`.
+**Interpretation:** trade timing bars in a waterfall for queryable attributes, and give glue's own
+middleware errors somewhere to land.
+**Inferred intent:** stop paying for span volume that answers no question, and close a gap where a
+whole class of failure is invisible in traces.
+
+### What I did
+
+Deleted the four `tracer.Start`/`defer span.End()` pairs and added two unexported helpers in
+`/http/otel.go` next to `GetRootSpanFromContext`: `setRootSpanDuration`, which writes a float64
+millisecond attribute, and `recordErrorOnRootSpan`, which records the error and sets an error status.
+Both guard with `!= nil && IsRecording()` like the existing callers, since `GetRootSpanFromContext`
+returns a nil interface rather than a no-op span.
+
+`TracingMux` keeps its type, its methods and its `chi.Router` conformance, and now times the handler
+instead of wrapping it in a span. The three auth middlewares each time their own work.
+
+`RecordError` and an error status now cover all four error branches in `/http/auth.go`: the two
+session-destroy failures, the user lookup failure, and the permissions lookup failure in both
+`Authorize` and `SavePermissionsInContext`.
+
+### Why
+
+A span should be interesting *and* aggregable, and grouping by `http.Authenticate` yields exactly
+one bucket. Four span types with nothing on them but a name and a duration were buying waterfall bars
+and nothing queryable, at roughly 42% of span volume. As attributes on the main span the same
+information is not merely cheaper, it is more useful: you can now ask which routes have slow
+authorization, or compare handler time against total request time, neither of which was expressible
+when the numbers lived on separate spans.
+
+On error recording, there is a distinction worth stating plainly because it looks inconsistent from
+outside. Recording handler errors in `adaptPage` was proposed before and rejected: those errors
+belong to the application, which already records them, and glue duplicating that would double-count.
+The errors added here are glue's own, raised inside glue's own middleware, and they fail the request
+*before* any application code runs. The application never sees them and cannot record them. So the
+rule is not "glue does not record errors", it is "glue records the errors only glue can see".
+
+### What worked
+
+Splitting the timing out of the span turned out to sharpen what is being measured. A span wrapping
+the middleware necessarily included everything downstream of it, because `defer span.End()` fires
+after `next.ServeHTTP` returns -- so the old `http.Authenticate` span duration was essentially the
+whole request. The attribute stops the clock before handing off, so it measures only the middleware's
+own work, which is the number anyone actually wanted. The test proves it: the handler below sleeps
+20ms and the assertion requires the recorded value to be under 10.
+
+`handler.duration_ms` records in a `defer`, so a panicking handler is still measured, matching the
+main-span treatment from Step 5.
+
+### What didn't work
+
+Nothing failed. Every pre-existing test in the package passed untouched after the change, which was
+mildly surprising for a change this size and is explained by none of them having asserted on the four
+span names in the first place.
+
+### What I learned
+
+**Double-writes: safe by construction on every path glue offers, with one caveat outside it.** Every
+registration method on `TracingMux` calls `wrapHandlerFunc` exactly once. `Mount` and `Use` pass
+their argument through untouched. `Group`, `Route` and `With` hand `fn` a fresh `TracingMux` whose
+`mux` is the *plain chi* sub-router returned by the embedded call, not another `TracingMux`, so a
+handler registered on a sub-router is wrapped once there and handed to chi. There is no path where
+one `TracingMux` delegates to another. Six table cases pin this, including a mounted sub-router
+asserting the attribute is *absent* because the sub-router owns its own handlers.
+
+The caveat: `Handle` or `Method` with a `*TracingMux` as the handler, instead of `Mount`, would wrap
+the sub-router's `ServeHTTP` on top of the wrapping its own leaves already have, and
+`handler.duration_ms` would be written twice with the outer value winning. That is legal chi but
+means bypassing `Mount` for something `Mount` exists to do. Reported rather than worked around.
+
+For the auth middlewares a double-write is possible and it is the application's to avoid: applying
+`Authenticate` on a parent router and again on a group runs both. Worth knowing exactly what that
+produces, since it is not corruption. Each middleware writes before handing off, so the outer writes
+first and the inner writes second, and last-write-wins leaves the *inner* invocation's value --
+one middleware's own work, not a sum and not a total. A silently lost measurement rather than a wrong
+one.
+
+### What was tricky
+
+**What became of the `tracer` field.** With no span to start, `TracingMux.tracer` had no reader, so it
+is gone, along with `Server.tracer`, which turned out to have been assigned and never read at all.
+The interesting part was the `t.tracer == nil` guard, which meant "tracing is not configured, so do
+not wrap". It has no direct replacement, and that is the point: the question it asked at registration
+time is now asked at request time and answered by whether the request carries a root span.
+`setRootSpanDuration` returns without doing anything when there is none, so wrapping unconditionally
+is safe and costs a `time.Now()` pair and a nil check when tracing is off. The exported surface is
+unchanged, since the field was unexported and the type and all its methods remain.
+
+The other subtlety was where to stop each clock. There is no single exit from these middlewares --
+`Authenticate` alone has seven -- and a `defer` would have reintroduced exactly the downstream
+inclusion the change is meant to remove. Each middleware therefore closes over a small `done()` which
+is called at every exit, immediately before handing off or writing a response.
+
+### What warrants review
+
+The boundaries of each measurement, since a duration whose scope is unclear is worse than none.
+`handler.duration_ms` covers the handler and everything it calls, and no middleware.
+The three middleware attributes cover only that middleware's own work. None of them sums to
+`duration_ms`, and the difference between them and the total is everything else, not any one thing.
+This is written into the doc comments rather than left to be inferred.
+
+### Future work
+
+Nothing new.

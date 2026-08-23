@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	g "maragu.dev/gomponents"
 	"maragu.dev/is"
 
@@ -562,6 +564,165 @@ func TestRedirectIfAuthenticated(t *testing.T) {
 			is.Equal(t, test.expectStatus, rec.Code)
 			is.Equal(t, test.expectNextHandlerCalled, called)
 			is.Equal(t, test.expectRedirect, rec.Header().Get("Location"))
+		})
+	}
+}
+
+// TestMiddlewareTimings covers the attributes which replaced the per-middleware spans. Each records only
+// its own work, so the value must be well under the time the handler below it spends.
+func TestMiddlewareTimings(t *testing.T) {
+	tests := []struct {
+		name       string
+		key        attribute.Key
+		middleware gluehttp.Middleware
+		withUser   bool
+	}{
+		{
+			name:       "Authenticate",
+			key:        "authn.duration_ms",
+			middleware: gluehttp.Authenticate(slog.New(slog.DiscardHandler), &mockSessionManager{exists: true}, &mockUserActiveChecker{active: true}),
+		},
+		{
+			name:       "Authorize",
+			key:        "authz.duration_ms",
+			middleware: gluehttp.Authorize(slog.New(slog.DiscardHandler), &mockPermissionsGetter{permissions: []model.Permission{"read"}}, "read"),
+			withUser:   true,
+		},
+		{
+			name:       "SavePermissionsInContext",
+			key:        "permissions.duration_ms",
+			middleware: gluehttp.SavePermissionsInContext(slog.New(slog.DiscardHandler), &mockPermissionsGetter{permissions: []model.Permission{"read"}}),
+			withUser:   true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name+" should record its own duration on the root span", func(t *testing.T) {
+			sr := oteltest.NewSpanRecorder(t)
+
+			ctx, rootSpan := otel.Tracer("test").Start(t.Context(), "root")
+			ctx = context.WithValue(ctx, gluehttp.ContextKey("rootSpan"), rootSpan)
+			if test.withUser {
+				userID := model.UserID("u_123")
+				ctx = context.WithValue(ctx, gluehttp.ContextKey("userID"), &userID)
+			}
+
+			var called bool
+			h := test.middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				time.Sleep(20 * time.Millisecond)
+			}))
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
+			rootSpan.End()
+
+			is.True(t, called)
+
+			attrs := endedSpanNamed(t, sr, "root").Attributes()
+			is.True(t, oteltest.HasAttributeKey(attrs, test.key), "expected "+string(test.key))
+
+			for _, attr := range attrs {
+				if attr.Key != test.key {
+					continue
+				}
+				is.Equal(t, attribute.FLOAT64, attr.Value.Type())
+				is.True(t, attr.Value.AsFloat64() >= 0, "duration should not be negative")
+				// The handler slept 20ms, so anything near that means the handler got counted too
+				is.True(t, attr.Value.AsFloat64() < 10, "expected the middleware's own work, not the handler below it")
+			}
+		})
+
+		t.Run(test.name+" should not start a span of its own", func(t *testing.T) {
+			sr := oteltest.NewSpanRecorder(t)
+
+			ctx, rootSpan := otel.Tracer("test").Start(t.Context(), "root")
+			ctx = context.WithValue(ctx, gluehttp.ContextKey("rootSpan"), rootSpan)
+			if test.withUser {
+				userID := model.UserID("u_123")
+				ctx = context.WithValue(ctx, gluehttp.ContextKey("userID"), &userID)
+			}
+
+			h := test.middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
+			rootSpan.End()
+
+			// Only the root span the test made, nothing from the middleware
+			is.Equal(t, 1, len(sr.Ended()))
+		})
+	}
+}
+
+// TestMiddlewareErrors covers errors raised by this package's own middleware, which fail the request
+// before any application handler runs and so cannot be recorded by the application.
+func TestMiddlewareErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		middleware gluehttp.Middleware
+		withUser   bool
+	}{
+		{
+			name:       "Authenticate",
+			middleware: gluehttp.Authenticate(slog.New(slog.DiscardHandler), &mockSessionManager{exists: true}, &mockUserActiveChecker{err: errors.New("oh no")}),
+		},
+		{
+			name:       "Authorize",
+			middleware: gluehttp.Authorize(slog.New(slog.DiscardHandler), &mockPermissionsGetter{err: errors.New("oh no")}, "read"),
+			withUser:   true,
+		},
+		{
+			name:       "SavePermissionsInContext",
+			middleware: gluehttp.SavePermissionsInContext(slog.New(slog.DiscardHandler), &mockPermissionsGetter{err: errors.New("oh no")}),
+			withUser:   true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name+" should record the error on the root span", func(t *testing.T) {
+			sr := oteltest.NewSpanRecorder(t)
+
+			ctx, rootSpan := otel.Tracer("test").Start(t.Context(), "root")
+			ctx = context.WithValue(ctx, gluehttp.ContextKey("rootSpan"), rootSpan)
+			if test.withUser {
+				userID := model.UserID("u_123")
+				ctx = context.WithValue(ctx, gluehttp.ContextKey("userID"), &userID)
+			}
+
+			var called bool
+			h := test.middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+			}))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
+			rootSpan.End()
+
+			is.Equal(t, http.StatusInternalServerError, rec.Code)
+			is.True(t, !called, "the handler should not run after the middleware fails")
+
+			span := endedSpanNamed(t, sr, "root")
+			is.Equal(t, codes.Error, span.Status().Code)
+
+			var recorded bool
+			for _, event := range span.Events() {
+				if event.Name == "exception" {
+					recorded = true
+				}
+			}
+			is.True(t, recorded, "expected the error recorded as an exception event on the root span")
+		})
+
+		t.Run(test.name+" should not panic when there is no root span to record on", func(t *testing.T) {
+			oteltest.NewSpanRecorder(t)
+
+			ctx := t.Context()
+			if test.withUser {
+				userID := model.UserID("u_123")
+				ctx = context.WithValue(ctx, gluehttp.ContextKey("userID"), &userID)
+			}
+
+			h := test.middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
+
+			is.Equal(t, http.StatusInternalServerError, rec.Code)
 		})
 	}
 }
