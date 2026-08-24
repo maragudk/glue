@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 )
 
 // NewSpanRecorder for testing.
@@ -49,4 +50,18 @@ func HasAttributeKey(attrs []attribute.KeyValue, key attribute.Key) bool {
 		}
 	}
 	return false
+}
+
+// ExceptionEventsWithStackTrace recorded on the span, which is what instrumentation recording an error
+// with [go.opentelemetry.io/otel/trace.WithStackTrace] leaves behind. The SDK records an exception event of its own when a panic
+// unwinds through a span's End, and without a stack trace unless End was asked for one, so the stack
+// trace is what tells a deliberate recording apart from that one.
+func ExceptionEventsWithStackTrace(span sdktrace.ReadOnlySpan) []sdktrace.Event {
+	var events []sdktrace.Event
+	for _, event := range span.Events() {
+		if event.Name == semconv.ExceptionEventName && HasAttributeKey(event.Attributes, semconv.ExceptionStacktraceKey) {
+			events = append(events, event)
+		}
+	}
+	return events
 }
