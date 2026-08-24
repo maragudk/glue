@@ -19,6 +19,15 @@ import (
 	glueotel "maragu.dev/glue/otel"
 )
 
+// OpenTelemetry middleware which starts the main server span for a request and describes it with the
+// request, the route, and the client.
+//
+// Trace context arriving with the request, such as the traceparent and tracestate headers, never becomes
+// the span's parent. Such a request gets a span which is a trace root of its own, with the remote context
+// recorded as a span link. The client sending the request is outside this service's control, so a parent
+// from it would let it decide how this service's traces are grouped and sampled; the link keeps the
+// correlation without handing that over. A parent already in the request context, from tracing above this
+// middleware in the same process, is a parent as usual.
 func OpenTelemetry(next http.Handler) http.Handler {
 	return otelhttp.NewHandler(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -117,6 +126,13 @@ func OpenTelemetry(next http.Handler) http.Handler {
 		"",
 		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 			return spanName(r)
+		}),
+		// A new trace root with a link, for requests which brought trace context with them. [otelhttp]
+		// hands this the context it extracted, so a remote span context is there exactly when the request
+		// carried one, and an in-process parent stays a parent. Answering true unconditionally would sever
+		// that one too, and without a link, since only a remote context is linked.
+		otelhttp.WithPublicEndpointFn(func(r *http.Request) bool {
+			return trace.SpanContextFromContext(r.Context()).IsRemote()
 		}),
 	)
 }

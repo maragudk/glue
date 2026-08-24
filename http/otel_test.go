@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
@@ -309,6 +311,111 @@ func TestOpenTelemetry(t *testing.T) {
 		is.True(t, !oteltest.HasAttributeKey(span.Attributes(), "http.client_disconnected"), "unexpected client disconnected attribute")
 	})
 
+	// Trace context on the request comes from a client outside this service's control, so it decides
+	// neither the trace grouping nor the sampling. It is kept as a link, which correlates the two traces
+	// without one owning the other.
+	t.Run("starts a new trace root and links the remote span context the request carried", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			traceFlags string
+		}{
+			{name: "sampled trace", traceFlags: "01"},
+			// Parented to this, the span would inherit the sampling decision and never be recorded at all
+			// under the default sampler, so reaching the assertions below is itself part of the test.
+			{name: "unsampled trace", traceFlags: "00"},
+		}
+
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				sr := oteltest.NewSpanRecorder(t)
+				useTraceContextPropagator(t)
+
+				traceID, err := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+				is.NotError(t, err)
+				spanID, err := trace.SpanIDFromHex("00f067aa0ba902b7")
+				is.NotError(t, err)
+
+				mux := chi.NewMux()
+				mux.Use(gluehttp.OpenTelemetry)
+				mux.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {})
+
+				req := httptest.NewRequest(http.MethodGet, "/things/42", nil)
+				req.Header.Set("traceparent", "00-"+traceID.String()+"-"+spanID.String()+"-"+test.traceFlags)
+				req.Header.Set("tracestate", "vendor=abc123")
+				mux.ServeHTTP(httptest.NewRecorder(), req)
+
+				span := lastEndedSpan(t, sr)
+				is.True(t, !span.Parent().IsValid(), "expected the server span to have no parent")
+				is.True(t, span.SpanContext().TraceID() != traceID, "expected a trace ID of this service's own")
+				is.True(t, span.SpanContext().IsSampled(), "expected a sampling decision of this service's own")
+				is.Equal(t, 0, span.SpanContext().TraceState().Len())
+
+				links := span.Links()
+				is.Equal(t, 1, len(links))
+				is.Equal(t, traceID, links[0].SpanContext.TraceID())
+				is.Equal(t, spanID, links[0].SpanContext.SpanID())
+				is.True(t, links[0].SpanContext.IsRemote(), "expected the linked span context to be remote")
+				// The vendor state is the client's, so it belongs on the link rather than on this trace
+				is.Equal(t, "vendor=abc123", links[0].SpanContext.TraceState().String())
+			})
+		}
+	})
+
+	t.Run("starts a root span with no links when the request carries no trace context", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			traceparent string
+		}{
+			{name: "no traceparent header"},
+			// Nothing valid to link, and nothing to fail the request over either
+			{name: "malformed traceparent header", traceparent: "not-a-traceparent"},
+			{name: "traceparent header with a zero trace ID", traceparent: "00-00000000000000000000000000000000-00f067aa0ba902b7-01"},
+		}
+
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				sr := oteltest.NewSpanRecorder(t)
+				useTraceContextPropagator(t)
+
+				mux := chi.NewMux()
+				mux.Use(gluehttp.OpenTelemetry)
+				mux.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {})
+
+				req := httptest.NewRequest(http.MethodGet, "/things/42", nil)
+				if test.traceparent != "" {
+					req.Header.Set("traceparent", test.traceparent)
+				}
+				mux.ServeHTTP(httptest.NewRecorder(), req)
+
+				span := lastEndedSpan(t, sr)
+				is.True(t, !span.Parent().IsValid(), "expected the server span to have no parent")
+				is.Equal(t, 0, len(span.Links()))
+			})
+		}
+	})
+
+	// The middleware is exported and can be reached with a span already in the request context: under a
+	// router which traces, under another copy of this middleware, or from an in-process request. That
+	// parent is this process's own, so severing it would lose the connection for nothing, and it would be
+	// lost silently, since only a remote span context is linked.
+	t.Run("keeps a parent span from the same process", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+		useTraceContextPropagator(t)
+
+		mux := chi.NewMux()
+		mux.Use(gluehttp.OpenTelemetry)
+		mux.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {})
+
+		ctx, parent := otel.Tracer("test").Start(t.Context(), "parent")
+		mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/things/42", nil).WithContext(ctx))
+		parent.End()
+
+		span := endedSpanNamed(t, sr, "GET /things/{id}")
+		is.Equal(t, parent.SpanContext().SpanID(), span.Parent().SpanID())
+		is.Equal(t, parent.SpanContext().TraceID(), span.SpanContext().TraceID())
+		is.Equal(t, 0, len(span.Links()))
+	})
+
 	// This is what lets everything below write telemetry without being handed a span: whatever the context
 	// carries below the middleware is the main span itself.
 	t.Run("makes the main span the current span for handlers below it", func(t *testing.T) {
@@ -329,6 +436,23 @@ func TestOpenTelemetry(t *testing.T) {
 		is.True(t, oteltest.HasAttribute(span.Attributes(), attribute.Bool("main", true)))
 		is.True(t, oteltest.HasAttribute(span.Attributes(), attribute.Bool("from.handler", true)),
 			"expected the handler to have written on the main span")
+	})
+}
+
+// useTraceContextPropagator globally for the duration of the test, leaving a propagator which extracts
+// nothing behind afterwards. The middleware reads trace context off the request through the global
+// [propagation.TextMapPropagator], which extracts nothing by default, so a traceparent header goes
+// unnoticed without this. That default cannot be restored: setting a propagator wires the global delegator
+// to it for good, and handing the delegator back to [otel.SetTextMapPropagator] leaves it delegating to
+// this one, so an empty composite stands in for it. Like [oteltest.NewSpanRecorder] this mutates global
+// state, so it is not safe for parallel tests.
+func useTraceContextPropagator(t *testing.T) {
+	t.Helper()
+
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	t.Cleanup(func() {
+		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
 	})
 }
 
