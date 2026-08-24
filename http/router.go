@@ -230,19 +230,20 @@ func (t *TracingMux) wrapHandler(h http.Handler) http.Handler {
 	return http.Handler(t.wrapHandlerFunc(h.ServeHTTP))
 }
 
-// wrapHandlerFunc to time the handler and record it on the main span as handler.duration_ms.
+// wrapHandlerFunc to time the handler and record it as handler.duration_ms on the current span, which
+// under [OpenTelemetry] is the main span. See [setSpanDuration] for the contract.
 //
 // The measurement runs from when the registered handler is entered until it returns,
 // so whatever was composed into that handler — including any hand-wrapped middleware — is included.
 //
 // It records in a defer, so a panicking handler is still measured. There is no check for whether tracing
-// is configured, because there is nothing to check at registration time: with no root span on the request
-// there is nowhere to write, and [setRootSpanDuration] returns without doing anything.
+// is configured, because there is nothing to check at registration time: with no span on the request there
+// is nowhere to write, and [setSpanDuration] returns without doing anything.
 func (t *TracingMux) wrapHandlerFunc(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		defer func() {
-			setRootSpanDuration(r.Context(), "handler.duration_ms", time.Since(start))
+			setSpanDuration(r.Context(), "handler.duration_ms", time.Since(start))
 		}()
 
 		h(w, r)

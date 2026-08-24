@@ -6,11 +6,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -307,8 +309,8 @@ func TestSavePermissionsInContext(t *testing.T) {
 	}
 }
 
-// TestPermissionsOnRootSpan runs the same table against each middleware which fetches permissions.
-func TestPermissionsOnRootSpan(t *testing.T) {
+// TestPermissionsOnSpan runs the same table against each middleware which fetches permissions.
+func TestPermissionsOnSpan(t *testing.T) {
 	tests := []struct {
 		name       string
 		middleware func(pg *mockPermissionsGetter) gluehttp.Middleware
@@ -328,7 +330,7 @@ func TestPermissionsOnRootSpan(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		t.Run(test.name+" should set the permissions on the root span", func(t *testing.T) {
+		t.Run(test.name+" should set the permissions on the current span", func(t *testing.T) {
 			sr := oteltest.NewSpanRecorder(t)
 
 			pg := &mockPermissionsGetter{permissions: []model.Permission{"read", "write"}}
@@ -336,7 +338,6 @@ func TestPermissionsOnRootSpan(t *testing.T) {
 			ctx, rootSpan := otel.Tracer("test").Start(t.Context(), "root")
 			userID := model.UserID("u_123")
 			ctx = context.WithValue(ctx, gluehttp.ContextKey("userID"), &userID)
-			ctx = context.WithValue(ctx, gluehttp.ContextKey("rootSpan"), rootSpan)
 
 			var called bool
 			h := test.middleware(pg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -349,7 +350,7 @@ func TestPermissionsOnRootSpan(t *testing.T) {
 
 			attrs := endedSpanNamed(t, sr, "root").Attributes()
 			is.True(t, oteltest.HasAttribute(attrs, attribute.StringSlice("enduser.permissions", []string{"read", "write"})),
-				"expected enduser.permissions on the root span")
+				"expected enduser.permissions on the current span")
 		})
 
 		t.Run(test.name+" should set an empty permissions attribute for a user with no permissions", func(t *testing.T) {
@@ -360,7 +361,6 @@ func TestPermissionsOnRootSpan(t *testing.T) {
 			ctx, rootSpan := otel.Tracer("test").Start(t.Context(), "root")
 			userID := model.UserID("u_123")
 			ctx = context.WithValue(ctx, gluehttp.ContextKey("userID"), &userID)
-			ctx = context.WithValue(ctx, gluehttp.ContextKey("rootSpan"), rootSpan)
 
 			h := test.middleware(pg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
@@ -369,10 +369,10 @@ func TestPermissionsOnRootSpan(t *testing.T) {
 			// An empty list means "we looked and there were none", which is not the same as never looking
 			attrs := endedSpanNamed(t, sr, "root").Attributes()
 			is.True(t, oteltest.HasAttribute(attrs, attribute.StringSlice("enduser.permissions", nil)),
-				"expected an empty enduser.permissions on the root span")
+				"expected an empty enduser.permissions on the current span")
 		})
 
-		t.Run(test.name+" should set no permissions on a root span which is not recording", func(t *testing.T) {
+		t.Run(test.name+" should set no permissions on a span which is not recording", func(t *testing.T) {
 			sr := oteltest.NewSpanRecorder(t)
 
 			pg := &mockPermissionsGetter{permissions: []model.Permission{"read", "write"}}
@@ -382,7 +382,6 @@ func TestPermissionsOnRootSpan(t *testing.T) {
 
 			userID := model.UserID("u_123")
 			ctx = context.WithValue(ctx, gluehttp.ContextKey("userID"), &userID)
-			ctx = context.WithValue(ctx, gluehttp.ContextKey("rootSpan"), rootSpan)
 
 			h := test.middleware(pg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
@@ -392,13 +391,12 @@ func TestPermissionsOnRootSpan(t *testing.T) {
 				"expected no enduser.permissions on a span which had already ended")
 		})
 
-		t.Run(test.name+" should set no permissions on the root span when there is no user", func(t *testing.T) {
+		t.Run(test.name+" should set no permissions on the current span when there is no user", func(t *testing.T) {
 			sr := oteltest.NewSpanRecorder(t)
 
 			pg := &mockPermissionsGetter{permissions: []model.Permission{"read", "write"}}
 
 			ctx, rootSpan := otel.Tracer("test").Start(t.Context(), "root")
-			ctx = context.WithValue(ctx, gluehttp.ContextKey("rootSpan"), rootSpan)
 
 			h := test.middleware(pg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
@@ -406,10 +404,10 @@ func TestPermissionsOnRootSpan(t *testing.T) {
 
 			attrs := endedSpanNamed(t, sr, "root").Attributes()
 			is.True(t, !oteltest.HasAttributeKey(attrs, "enduser.permissions"),
-				"expected no enduser.permissions on the root span")
+				"expected no enduser.permissions on the current span")
 		})
 
-		t.Run(test.name+" should not panic when there is no root span", func(t *testing.T) {
+		t.Run(test.name+" should not panic when there is no span in the context", func(t *testing.T) {
 			oteltest.NewSpanRecorder(t)
 
 			pg := &mockPermissionsGetter{permissions: []model.Permission{"read", "write"}}
@@ -598,7 +596,7 @@ func TestMiddlewareTimings(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		t.Run(test.name+" should record its own duration on the root span", func(t *testing.T) {
+		t.Run(test.name+" should record its own duration on the current span", func(t *testing.T) {
 			// Everything runs inside the bubble, where the clock is fake and only advances when something
 			// sleeps. The middleware itself never sleeps, so its own work measures exactly zero, and the
 			// handler's sleep is the tripwire: had it been counted, the measurement would be exactly 20.
@@ -606,7 +604,6 @@ func TestMiddlewareTimings(t *testing.T) {
 				sr := oteltest.NewSpanRecorder(t)
 
 				ctx, rootSpan := otel.Tracer("test").Start(t.Context(), "root")
-				ctx = context.WithValue(ctx, gluehttp.ContextKey("rootSpan"), rootSpan)
 				if test.withUser {
 					userID := model.UserID("u_123")
 					ctx = context.WithValue(ctx, gluehttp.ContextKey("userID"), &userID)
@@ -639,7 +636,6 @@ func TestMiddlewareTimings(t *testing.T) {
 			sr := oteltest.NewSpanRecorder(t)
 
 			ctx, rootSpan := otel.Tracer("test").Start(t.Context(), "root")
-			ctx = context.WithValue(ctx, gluehttp.ContextKey("rootSpan"), rootSpan)
 			if test.withUser {
 				userID := model.UserID("u_123")
 				ctx = context.WithValue(ctx, gluehttp.ContextKey("userID"), &userID)
@@ -659,32 +655,35 @@ func TestMiddlewareTimings(t *testing.T) {
 // before any application handler runs and so cannot be recorded by the application.
 func TestMiddlewareErrors(t *testing.T) {
 	tests := []struct {
-		name       string
-		middleware gluehttp.Middleware
-		withUser   bool
+		name              string
+		middleware        gluehttp.Middleware
+		withUser          bool
+		expectDescription string
 	}{
 		{
-			name:       "Authenticate",
-			middleware: gluehttp.Authenticate(slog.New(slog.DiscardHandler), &mockSessionManager{exists: true}, &mockUserActiveChecker{err: errors.New("oh no")}),
+			name:              "Authenticate",
+			middleware:        gluehttp.Authenticate(slog.New(slog.DiscardHandler), &mockSessionManager{exists: true}, &mockUserActiveChecker{err: errors.New("oh no")}),
+			expectDescription: "error getting user after authentication",
 		},
 		{
-			name:       "Authorize",
-			middleware: gluehttp.Authorize(slog.New(slog.DiscardHandler), &mockPermissionsGetter{err: errors.New("oh no")}, "read"),
-			withUser:   true,
+			name:              "Authorize",
+			middleware:        gluehttp.Authorize(slog.New(slog.DiscardHandler), &mockPermissionsGetter{err: errors.New("oh no")}, "read"),
+			withUser:          true,
+			expectDescription: "error getting permissions",
 		},
 		{
-			name:       "SavePermissionsInContext",
-			middleware: gluehttp.SavePermissionsInContext(slog.New(slog.DiscardHandler), &mockPermissionsGetter{err: errors.New("oh no")}),
-			withUser:   true,
+			name:              "SavePermissionsInContext",
+			middleware:        gluehttp.SavePermissionsInContext(slog.New(slog.DiscardHandler), &mockPermissionsGetter{err: errors.New("oh no")}),
+			withUser:          true,
+			expectDescription: "error getting permissions",
 		},
 	}
 
 	for _, test := range tests {
-		t.Run(test.name+" should record the error on the root span", func(t *testing.T) {
+		t.Run(test.name+" should record the error on the current span", func(t *testing.T) {
 			sr := oteltest.NewSpanRecorder(t)
 
 			ctx, rootSpan := otel.Tracer("test").Start(t.Context(), "root")
-			ctx = context.WithValue(ctx, gluehttp.ContextKey("rootSpan"), rootSpan)
 			if test.withUser {
 				userID := model.UserID("u_123")
 				ctx = context.WithValue(ctx, gluehttp.ContextKey("userID"), &userID)
@@ -710,10 +709,49 @@ func TestMiddlewareErrors(t *testing.T) {
 					recorded = true
 				}
 			}
-			is.True(t, recorded, "expected the error recorded as an exception event on the root span")
+			is.True(t, recorded, "expected the error recorded as an exception event on the current span")
 		})
 
-		t.Run(test.name+" should not panic when there is no root span to record on", func(t *testing.T) {
+		// The status description is not a safe place for this. otelhttp sets the span status from the
+		// response code after the middleware has returned, and the SDK lets an equal status code overwrite,
+		// so a 500 replaces the description with the empty string. The description has to reach the backend
+		// on the exception event, which nothing above touches.
+		t.Run(test.name+" should keep the error description under an otelhttp handler", func(t *testing.T) {
+			sr := oteltest.NewSpanRecorder(t)
+
+			ctx := t.Context()
+			if test.withUser {
+				userID := model.UserID("u_123")
+				ctx = context.WithValue(ctx, gluehttp.ContextKey("userID"), &userID)
+			}
+
+			h := otelhttp.NewHandler(test.middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})), "GET /")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
+
+			is.Equal(t, http.StatusInternalServerError, rec.Code)
+
+			span := endedSpanNamed(t, sr, "GET /")
+			is.Equal(t, codes.Error, span.Status().Code)
+
+			var message string
+			for _, event := range span.Events() {
+				if event.Name != "exception" {
+					continue
+				}
+				for _, attr := range event.Attributes {
+					if attr.Key == "exception.message" {
+						message = attr.Value.AsString()
+					}
+				}
+			}
+			is.True(t, strings.Contains(message, test.expectDescription),
+				"expected the exception message to carry "+test.expectDescription+", got "+message)
+			is.True(t, strings.Contains(message, "oh no"),
+				"expected the exception message to carry the underlying error, got "+message)
+		})
+
+		t.Run(test.name+" should not panic when there is no span to record on", func(t *testing.T) {
 			oteltest.NewSpanRecorder(t)
 
 			ctx := t.Context()
@@ -727,6 +765,100 @@ func TestMiddlewareErrors(t *testing.T) {
 			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
 
 			is.Equal(t, http.StatusInternalServerError, rec.Code)
+		})
+	}
+}
+
+// TestMiddlewareTelemetryComposition pins where the middleware attributes land, in each of the two
+// compositions the package supports. The middleware are exported, so running them under some other
+// OpenTelemetry middleware instead of this package's own is a valid use of the public API, and the
+// telemetry has to survive it rather than silently going nowhere.
+func TestMiddlewareTelemetryComposition(t *testing.T) {
+	tests := []struct {
+		name        string
+		middleware  func(pg *mockPermissionsGetter) gluehttp.Middleware
+		durationKey attribute.Key
+	}{
+		{
+			name: "Authorize",
+			middleware: func(pg *mockPermissionsGetter) gluehttp.Middleware {
+				return gluehttp.Authorize(slog.New(slog.DiscardHandler), pg, "read")
+			},
+			durationKey: "authz.duration_ms",
+		},
+		{
+			name: "SavePermissionsInContext",
+			middleware: func(pg *mockPermissionsGetter) gluehttp.Middleware {
+				return gluehttp.SavePermissionsInContext(slog.New(slog.DiscardHandler), pg)
+			},
+			durationKey: "permissions.duration_ms",
+		},
+	}
+
+	for _, test := range tests {
+		// Only one permissions middleware per chain, since both write enduser.permissions and the second
+		// would cover for a first which had stopped writing it.
+		authenticate := func(next http.Handler) http.Handler {
+			return gluehttp.Authenticate(slog.New(slog.DiscardHandler), &mockSessionManager{exists: true},
+				&mockUserActiveChecker{active: true})(next)
+		}
+
+		assertAttributes := func(t *testing.T, attrs []attribute.KeyValue) {
+			t.Helper()
+
+			for _, key := range []attribute.Key{"authn.duration_ms", test.durationKey} {
+				is.True(t, oteltest.HasAttributeKey(attrs, key), "expected "+string(key))
+			}
+			is.True(t, oteltest.HasAttribute(attrs, attribute.String("enduser.pseudo.id", "u_123")),
+				"expected enduser.pseudo.id")
+			is.True(t, oteltest.HasAttribute(attrs, attribute.StringSlice("enduser.permissions", []string{"read", "write"})),
+				"expected enduser.permissions")
+		}
+
+		t.Run("Authenticate and "+test.name+" should record on the main span under OpenTelemetry", func(t *testing.T) {
+			sr := oteltest.NewSpanRecorder(t)
+
+			var called bool
+			mux := chi.NewMux()
+			mux.Use(gluehttp.OpenTelemetry)
+			mux.Use(authenticate)
+			mux.Use(test.middleware(&mockPermissionsGetter{permissions: []model.Permission{"read", "write"}}))
+			mux.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {
+				called = true
+			})
+
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/things/42", nil))
+
+			is.Equal(t, http.StatusOK, rec.Code)
+			is.True(t, called)
+
+			// Everything has to be on the one span marked main, which is the span a backend filters to.
+			span := endedSpanNamed(t, sr, "GET /things/{id}")
+			is.True(t, oteltest.HasAttribute(span.Attributes(), attribute.Bool("main", true)),
+				"expected the attributes on the main span")
+			assertAttributes(t, span.Attributes())
+		})
+
+		t.Run("Authenticate and "+test.name+" should record on the span of a plain otelhttp handler", func(t *testing.T) {
+			sr := oteltest.NewSpanRecorder(t)
+
+			var called bool
+			var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+			})
+			h = test.middleware(&mockPermissionsGetter{permissions: []model.Permission{"read", "write"}})(h)
+			h = authenticate(h)
+			// The span name is the operation passed here, since there is no router below to match a route.
+			h = otelhttp.NewHandler(h, "GET /")
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+			is.Equal(t, http.StatusOK, rec.Code)
+			is.True(t, called)
+
+			assertAttributes(t, endedSpanNamed(t, sr, "GET /").Attributes())
 		})
 	}
 }

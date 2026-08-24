@@ -11,6 +11,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 	g "maragu.dev/gomponents"
 
 	"maragu.dev/glue/html"
@@ -58,7 +59,7 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 				if stop.IsZero() {
 					stop = time.Now()
 				}
-				setRootSpanDuration(ctx, "authn.duration_ms", stop.Sub(start))
+				setSpanDuration(ctx, "authn.duration_ms", stop.Sub(start))
 			}()
 
 			// If there is no session, do nothing and call the next handler
@@ -75,7 +76,7 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 				if errors.Is(err, model.ErrorUserNotFound) {
 					if err := sgd.Destroy(ctx); err != nil {
 						log.InfoContext(ctx, "Error destroying session for nonexistent user", "error", err, "userID", userID)
-						recordErrorOnRootSpan(ctx, err, "error destroying session after authentication")
+						recordErrorOnSpan(ctx, err, "error destroying session after authentication")
 						http.Error(w, "error destroying session after authentication", http.StatusInternalServerError)
 						return
 					}
@@ -87,7 +88,7 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 				}
 
 				log.InfoContext(ctx, "Error getting user after authentication", "error", err, "userID", userID)
-				recordErrorOnRootSpan(ctx, err, "error getting user after authentication")
+				recordErrorOnSpan(ctx, err, "error getting user after authentication")
 				http.Error(w, "error getting user after authentication", http.StatusInternalServerError)
 				return
 			}
@@ -96,7 +97,7 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 			if !active {
 				if err := sgd.Destroy(ctx); err != nil {
 					log.InfoContext(ctx, "Error destroying session for inactive user", "error", err, "userID", userID)
-					recordErrorOnRootSpan(ctx, err, "error destroying session after authentication")
+					recordErrorOnSpan(ctx, err, "error destroying session after authentication")
 					http.Error(w, "error destroying session after authentication", http.StatusInternalServerError)
 					return
 				}
@@ -106,10 +107,7 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 				return
 			}
 
-			// Add user ID to the root span
-			if rootSpan := GetRootSpanFromContext(ctx); rootSpan != nil && rootSpan.IsRecording() {
-				rootSpan.SetAttributes(semconv.EnduserPseudoID(string(userID)))
-			}
+			setUserIDOnSpan(ctx, userID)
 
 			// Store the user directly in the request context instead of having to use the session manager
 			stop = time.Now()
@@ -142,7 +140,7 @@ func Authorize(log *slog.Logger, pg permissionsGetter, requiredPermissions ...mo
 				if stop.IsZero() {
 					stop = time.Now()
 				}
-				setRootSpanDuration(ctx, "authz.duration_ms", stop.Sub(start))
+				setSpanDuration(ctx, "authz.duration_ms", stop.Sub(start))
 			}()
 
 			userID := GetUserIDFromContext(ctx)
@@ -155,12 +153,12 @@ func Authorize(log *slog.Logger, pg permissionsGetter, requiredPermissions ...mo
 			permissions, err := pg.GetPermissions(ctx, *userID)
 			if err != nil {
 				log.InfoContext(ctx, "Error getting permissions", "error", err, "userID", userID)
-				recordErrorOnRootSpan(ctx, err, "error getting permissions")
+				recordErrorOnSpan(ctx, err, "error getting permissions")
 				http.Error(w, "error getting permissions", http.StatusInternalServerError)
 				return
 			}
 
-			setPermissionsOnRootSpan(ctx, permissions)
+			setPermissionsOnSpan(ctx, permissions)
 
 			hasRequiredPermissions := true
 			for _, requiredPermission := range requiredPermissions {
@@ -199,7 +197,7 @@ func SavePermissionsInContext(log *slog.Logger, pg permissionsGetter) Middleware
 				if stop.IsZero() {
 					stop = time.Now()
 				}
-				setRootSpanDuration(ctx, "permissions.duration_ms", stop.Sub(start))
+				setSpanDuration(ctx, "permissions.duration_ms", stop.Sub(start))
 			}()
 
 			userID := GetUserIDFromContext(ctx)
@@ -213,12 +211,12 @@ func SavePermissionsInContext(log *slog.Logger, pg permissionsGetter) Middleware
 			permissions, err := pg.GetPermissions(ctx, *userID)
 			if err != nil {
 				log.ErrorContext(ctx, "Error getting permissions", "error", err, "userID", userID)
-				recordErrorOnRootSpan(ctx, err, "error getting permissions")
+				recordErrorOnSpan(ctx, err, "error getting permissions")
 				http.Error(w, "error getting permissions", http.StatusInternalServerError)
 				return
 			}
 
-			setPermissionsOnRootSpan(ctx, permissions)
+			setPermissionsOnSpan(ctx, permissions)
 
 			stop = time.Now()
 			next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, contextPermissionsKey, permissions)))
@@ -226,11 +224,22 @@ func SavePermissionsInContext(log *slog.Logger, pg permissionsGetter) Middleware
 	}
 }
 
-// setPermissionsOnRootSpan as the enduser.permissions attribute, if the context carries a recording root
-// span. See [GetRootSpanFromContext].
-func setPermissionsOnRootSpan(ctx context.Context, permissions []model.Permission) {
-	rootSpan := GetRootSpanFromContext(ctx)
-	if rootSpan == nil || !rootSpan.IsRecording() {
+// setUserIDOnSpan as the enduser.pseudo.id attribute on the current span in the context, if it is
+// recording. See [setSpanDuration] for which span that is.
+func setUserIDOnSpan(ctx context.Context, userID model.UserID) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+
+	span.SetAttributes(semconv.EnduserPseudoID(string(userID)))
+}
+
+// setPermissionsOnSpan as the enduser.permissions attribute on the current span in the context, if it is
+// recording. See [setSpanDuration] for which span that is.
+func setPermissionsOnSpan(ctx context.Context, permissions []model.Permission) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
 		return
 	}
 
@@ -239,7 +248,7 @@ func setPermissionsOnRootSpan(ctx context.Context, permissions []model.Permissio
 		permissionStrings = append(permissionStrings, string(p))
 	}
 
-	rootSpan.SetAttributes(attribute.StringSlice("enduser.permissions", permissionStrings))
+	span.SetAttributes(attribute.StringSlice("enduser.permissions", permissionStrings))
 }
 
 func GetPermissionsFromContext(ctx context.Context) []model.Permission {

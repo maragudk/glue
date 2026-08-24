@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 	"maragu.dev/is"
 
 	gluehttp "maragu.dev/glue/http"
@@ -48,6 +49,44 @@ func TestOpenTelemetry(t *testing.T) {
 				is.Equal(t, test.expectedName, span.Name())
 			})
 		}
+	})
+
+	// A router which has already matched before the middleware runs sets [http.Request.Pattern] on the
+	// request the middleware is handed, so these cover the naming against a router above the middleware
+	// as well as below it.
+	t.Run("sets span name to method and route pattern below another router", func(t *testing.T) {
+		t.Run("mounted under an outer mux", func(t *testing.T) {
+			sr := oteltest.NewSpanRecorder(t)
+
+			inner := chi.NewMux()
+			inner.Use(gluehttp.OpenTelemetry)
+			inner.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {})
+
+			outer := chi.NewMux()
+			outer.Mount("/api", inner)
+
+			outer.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/things/42", nil))
+
+			span := lastEndedSpan(t, sr)
+			is.Equal(t, "GET /api/things/{id}", span.Name())
+			is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.HTTPRoute("/api/things/{id}")))
+		})
+
+		t.Run("inside a subrouter", func(t *testing.T) {
+			sr := oteltest.NewSpanRecorder(t)
+
+			mux := chi.NewMux()
+			mux.Route("/api", func(r chi.Router) {
+				r.Use(gluehttp.OpenTelemetry)
+				r.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {})
+			})
+
+			mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/things/42", nil))
+
+			span := lastEndedSpan(t, sr)
+			is.Equal(t, "GET /api/things/{id}", span.Name())
+			is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.HTTPRoute("/api/things/{id}")))
+		})
 	})
 
 	t.Run("sets main span attributes", func(t *testing.T) {
@@ -270,28 +309,26 @@ func TestOpenTelemetry(t *testing.T) {
 		is.True(t, !oteltest.HasAttributeKey(span.Attributes(), "http.client_disconnected"), "unexpected client disconnected attribute")
 	})
 
-	t.Run("stores root span in context", func(t *testing.T) {
-		oteltest.NewSpanRecorder(t)
-
-		var rootSpan bool
+	// This is what lets everything below write telemetry without being handed a span: whatever the context
+	// carries below the middleware is the main span itself.
+	t.Run("makes the main span the current span for handlers below it", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
 
 		mux := chi.NewMux()
 		mux.Use(gluehttp.OpenTelemetry)
-		mux.Get("/", func(w http.ResponseWriter, r *http.Request) {
-			rootSpan = gluehttp.GetRootSpanFromContext(r.Context()) != nil
+		mux.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {
+			trace.SpanFromContext(r.Context()).SetAttributes(attribute.Bool("from.handler", true))
 		})
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/things/42", nil)
 		mux.ServeHTTP(httptest.NewRecorder(), req)
 
-		is.True(t, rootSpan, "expected root span in context")
-	})
-}
-
-func TestGetRootSpanFromContext(t *testing.T) {
-	t.Run("returns nil when no root span in context", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		is.True(t, gluehttp.GetRootSpanFromContext(req.Context()) == nil)
+		// The write has to have landed on the one span marked main, not merely on some recording span
+		span := lastEndedSpan(t, sr)
+		is.Equal(t, "GET /things/{id}", span.Name())
+		is.True(t, oteltest.HasAttribute(span.Attributes(), attribute.Bool("main", true)))
+		is.True(t, oteltest.HasAttribute(span.Attributes(), attribute.Bool("from.handler", true)),
+			"expected the handler to have written on the main span")
 	})
 }
 

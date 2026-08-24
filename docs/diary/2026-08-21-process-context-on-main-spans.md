@@ -1117,3 +1117,139 @@ than something the type system enforces.
 ### Future work
 
 Nothing new.
+
+## Step 10: Drop the private root span key for the current span
+
+**Author:** builder (sub-agent)
+
+### Prompt Context
+
+**Verbatim prompt:** drop the private `contextRootSpanKey` entirely and rewrite the telemetry helpers on
+`trace.SpanFromContext`. New contract: attributes are written on the current span in the context. Delete
+the key, the `context.WithValue` in `OpenTelemetry`, and the exported `GetRootSpanFromContext`; rewrite
+`setRootSpanDuration` and `recordErrorOnRootSpan` so the nil guards collapse to an `IsRecording()` check
+and the names no longer claim "root"; switch the `enduser.pseudo.id` and `enduser.permissions` writes to
+the same mechanism; state the contract plainly in the doc comments; replace the tests which stuff
+`ContextKey("rootSpan")` into a context by hand with real spans, and add one test pinning the auth
+middleware under a plain span rather than glue's `OpenTelemetry`.
+**Interpretation:** the accessor was a second, private way of naming a span the context already carries,
+and it only worked when this package had put it there itself.
+**Inferred intent:** make the telemetry work under any valid composition of the exported middleware
+instead of only under this package's own wiring.
+
+### What I did
+
+`contextRootSpanKey`, its `context.WithValue`, and `GetRootSpanFromContext` are gone.
+`/http/otel.go` now has `setSpanDuration` and `recordErrorOnSpan` on `trace.SpanFromContext`, and
+`/http/auth.go` has `setUserIDOnSpan` and `setPermissionsOnSpan` beside them, all four guarded by a bare
+`IsRecording()`. The `enduser.pseudo.id` write in `Authenticate` had been open-coded; it moved into
+`setUserIDOnSpan` so the "which span" decision lives in one place per attribute rather than four.
+
+The tests which built a context by hand now rely on the span `tracer.Start` already put there, so the
+setup lost a line each rather than gaining one. `TestMiddlewareTelemetryComposition` is new and runs each
+composition twice: once under `http.OpenTelemetry`, asserting every attribute lands on the one span
+carrying `main=true`, and once under a bare `otelhttp.NewHandler`, which is the composition the finding
+was about. `TestTracingMux` gained the same second case for `handler.duration_ms`.
+
+Two further defects turned up along the way and are fixed here: the span naming (below) and
+`recordErrorOnSpan`'s description, which never reached a backend. Every call site responds 5xx, tracing
+middleware above then sets the span status from the response code, and the SDK's `SetStatus` only bails
+when the existing code is *greater* than the new one — equal codes overwrite, so `Error` over `Error`
+replaced the description with the empty string. It now goes into the recorded error instead, where the
+exception event carries it and nothing above touches it.
+
+### Why
+
+The key existed so `Authenticate` could reach past its own child span to the root. Step 8 deleted those
+child spans, so at every remaining call site the innermost span *is* the server span and the distinction
+the key encoded no longer exists. What was left was a private handshake: the exported middleware wrote
+telemetry only when this package's own `OpenTelemetry` had run above them, and silently wrote nothing
+otherwise. Reading the current span is the honest version of the same intent and works under any tracing
+middleware.
+
+The trade-off is real and accepted: a consumer who inserts a span-creating middleware between the tracing
+middleware and the auth middleware gets the attributes on that intermediate span rather than the main one.
+That is worse than the key for that one composition and better for every other, and it is the simpler
+contract to state, so it wins. `setSpanDuration`'s doc comment says so rather than claiming the current
+span is always the right place.
+
+### What worked
+
+Deleting the key made the tests simpler, which is usually a sign the abstraction was not carrying weight.
+`ctx, span := tracer.Start(...)` already returns a context carrying the span, so seven `context.WithValue`
+lines came straight out and nothing replaced them.
+
+`trace.SpanFromContext` never returning nil is what let the guards collapse: no span yields a noop span,
+an ended span yields itself, and `IsRecording()` is false for both. The existing "not recording" and "no
+span" subtests already covered both cases and passed unchanged.
+
+### What didn't work
+
+Removing `r = r.WithContext(ctx)` broke span naming, which the first `go test ./http` caught:
+
+    --- FAIL: TestOpenTelemetry/sets_span_name_to_method_and_route_pattern/GET_with_path_parameter
+        otel_test.go:49: Expected "GET /things/{id}", but got "" (type string)
+
+That line looked like pure bookkeeping for the key. It was not. chi assigns `r.Pattern = rctx.RoutePattern()`
+in place on the request struct it holds, and otelhttp, after the chain returns, does
+`if r.Pattern != "" { span.SetName(h.spanNameFormatter(h.operation, r)) }` on *its* request. The
+`WithContext` call had been handing the chain a copy, so chi's write landed below otelhttp and never
+reached it. Without the copy the two share one request, otelhttp sees a non-empty `Pattern`, and the
+default formatter returns the operation verbatim — which this package passes as `""`.
+
+My first fix was to keep the copy with a comment explaining it. The review round found that insufficient,
+and a test confirmed it: a router *above* the middleware sets `Pattern` before otelhttp's span even
+starts, so the rename fires regardless of any copy made below it.
+
+    --- FAIL: TestOpenTelemetry/.../mounted_under_an_outer_mux
+        otel_test.go:71: Expected "GET /api/things/{id}", but got "" (type string)
+    --- FAIL: TestOpenTelemetry/.../inside_a_subrouter
+        otel_test.go:87: Expected "GET /api/things/{id}", but got "" (type string)
+
+Both are ordinary uses of the public API, and both fail on the branch as it stood before this step too —
+verified by running the mounted case against `HEAD`. Every span under a mounted or sub-routed
+`http.OpenTelemetry` was going out named the empty string, with `http.route` set, so the loss looked
+cosmetic rather than total.
+
+The fix is to stop hiding from otelhttp and use its documented hook: the naming rule moved into `spanName`,
+which is passed to `otelhttp.WithSpanNameFormatter` and also called directly at the bottom of the
+middleware. Both paths are needed. The formatter's second run only happens when `r.Pattern` reaches back
+up, which any middleware replacing the request in between prevents — and `Authenticate` does exactly that
+on the authenticated path. The explicit `SetName` covers that; the formatter covers the routers above.
+
+### What I learned
+
+`http.Request` is a struct that middleware mutates in place, so whether two layers see each other's writes
+depends on who last called `WithContext`. That makes a `WithContext` call load-bearing for reasons that
+have nothing to do with contexts, which is exactly the kind of thing that gets deleted as dead weight.
+Preferring a library's documented extension point over an incidental structural property is the durable
+answer, and here it also fixed a bug the incidental property never covered.
+
+The SDK's `SetStatus` guard being `>` rather than `>=` is worth remembering: setting an error status does
+not protect it from a later error status, and instrumentation above will set one from the response code.
+Anything that has to survive belongs on an event or an attribute, not in the status description.
+
+### What was tricky
+
+Working out which of two plausible fixes to take. Keeping the copy was a smaller diff and preserved the
+existing behaviour exactly; the formatter changed how naming works. The deciding evidence was the mounted
+router test, which the copy cannot pass however it is written, because the mutation it needs to hide has
+already happened before the middleware runs.
+
+### What warrants review
+
+The naming change is the part with the most surface. `spanName` is now called from two places, and the
+claim is that they agree: the formatter's late run and the explicit `SetName` both read
+`chi.RouteContext(r.Context()).RoutePattern()` from a context chi mutates in place, so they see the same
+pattern. `TestOpenTelemetry` covers a top-level router, a mounted one, a sub-router, an unmatched request,
+and no router at all.
+
+Also worth a look: whether folding the description into the recorded error is the shape wanted, or whether
+it should be a separate attribute on the event. It changes what `exception.message` reads like, from
+`oh no` to `error getting permissions: oh no`.
+
+### Future work
+
+A panicking handler still exports a span named the empty string. `next.ServeHTTP` unwinds past the naming
+block, so `SetName` never runs and the operation stands. The panic test asserts attributes but not the
+name. Moving the naming into a defer would fix it; left alone here to keep this step to one concern.

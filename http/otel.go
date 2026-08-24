@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -18,14 +19,10 @@ import (
 	glueotel "maragu.dev/glue/otel"
 )
 
-const contextRootSpanKey = ContextKey("rootSpan")
-
 func OpenTelemetry(next http.Handler) http.Handler {
 	return otelhttp.NewHandler(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			span := trace.SpanFromContext(r.Context())
-			ctx := context.WithValue(r.Context(), contextRootSpanKey, span)
-			r = r.WithContext(ctx)
 
 			// Set before the request is handled, so the span stays countable as a unit of work even
 			// if the handler panics past everything below.
@@ -101,21 +98,39 @@ func OpenTelemetry(next http.Handler) http.Handler {
 				span.SetAttributes(attribute.Bool("http.client_disconnected", true))
 			}
 
-			// Semantic conventions want the span named "{method} {route}" where a low-cardinality route
-			// is available and "{method}" alone where it is not, and http.route present if and only if
-			// it is available. Nothing matched means no route, so the name carries no trailing space and
-			// the attribute stays off rather than going out as an empty string which would look like a
-			// real value when grouping. RoutePattern also returns "" for a handler served outside a chi
-			// router, which is the same case.
+			// The route is only known now that the router below has matched, and the formatter below cannot
+			// be relied on to pick it up: its second run happens only when [http.Request.Pattern] reaches
+			// back up here, which any middleware in between replacing the request prevents. So the name is
+			// set directly. http.route is Conditionally Required "if and only if it's available", so it
+			// stays off entirely when nothing matched rather than going out as an empty string, which would
+			// look like a real value when grouping.
+			span.SetName(spanName(r))
 			if routePattern := chi.RouteContext(r.Context()).RoutePattern(); routePattern != "" {
-				span.SetName(r.Method + " " + routePattern)
 				span.SetAttributes(semconv.HTTPRoute(routePattern))
-			} else {
-				span.SetName(r.Method)
 			}
 		}),
-		"", // Setting the name here doesn't matter, it's done on the span above
+		// The operation name is unused, since [spanName] decides the name from the request. The formatter
+		// is not optional though. [otelhttp.WithSpanNameFormatter] documents that it runs a second time
+		// after the middleware once something has set [http.Request.Pattern], which routers do, and with
+		// no formatter that run renames the span to the operation. A router either side of this middleware
+		// would otherwise leave every span named the empty string.
+		"",
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			return spanName(r)
+		}),
 	)
+}
+
+// spanName as semantic conventions want it: "{method} {route}" where a low-cardinality route is available
+// and "{method}" alone where it is not, so the name carries no trailing space when nothing matched.
+// [chi.Context.RoutePattern] returns "" both for a request no route matched and for a handler served
+// outside a chi router, which are the same case here.
+func spanName(r *http.Request) string {
+	if routePattern := chi.RouteContext(r.Context()).RoutePattern(); routePattern != "" {
+		return r.Method + " " + routePattern
+	}
+
+	return r.Method
 }
 
 func contextCanceled(errs ...error) bool {
@@ -136,39 +151,45 @@ func contextCanceled(errs ...error) bool {
 	return false
 }
 
-// GetRootSpanFromContext stored by the OpenTelemetry middleware.
-func GetRootSpanFromContext(ctx context.Context) trace.Span {
-	span := ctx.Value(contextRootSpanKey)
-	if span == nil {
-		return nil
-	}
-	return span.(trace.Span)
-}
-
-// setRootSpanDuration as an attribute in milliseconds, if the context carries a recording root span.
+// setSpanDuration as an attribute in milliseconds on the current span in the context, if it is recording.
+// This is the contract the three sibling helpers share: the attribute lands on whatever span the context
+// carries. Under [OpenTelemetry] that is the main server span. Under other tracing middleware it is
+// whichever span that middleware made current. Anything which starts a span in between takes the
+// attribute with it, which is the accepted cost of writing where the context points instead of requiring
+// a span this package placed itself. [trace.SpanFromContext] never returns nil, so a context with no span
+// yields a noop span which is not recording, and this does nothing.
+//
 // Milliseconds as a float, because the segments being measured are routinely well under one millisecond
 // and an integer would report most of them as zero. Each key names the segment it covers, because
-// duration_ms is already the whole span, and a segment that reads like the total invites subtracting one
-// from the other.
-func setRootSpanDuration(ctx context.Context, key string, d time.Duration) {
-	rootSpan := GetRootSpanFromContext(ctx)
-	if rootSpan == nil || !rootSpan.IsRecording() {
+// duration_ms is the whole of whichever span the attribute landed on, and a segment that reads like the
+// total invites subtracting one from the other.
+func setSpanDuration(ctx context.Context, key string, d time.Duration) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
 		return
 	}
 
-	rootSpan.SetAttributes(attribute.Float64(key, float64(d.Nanoseconds())/float64(time.Millisecond)))
+	span.SetAttributes(attribute.Float64(key, float64(d.Nanoseconds())/float64(time.Millisecond)))
 }
 
-// recordErrorOnRootSpan with the given description, if the context carries a recording root span.
+// recordErrorOnSpan with the given description, on the current span in the context, if it is recording.
+// See [setSpanDuration] for which span that is.
+//
 // This is for errors raised by this package's own middleware, which fail the request before any
 // application code runs and so are invisible to it. Errors from an application's own handlers are its
 // own to record.
-func recordErrorOnRootSpan(ctx context.Context, err error, description string) {
-	rootSpan := GetRootSpanFromContext(ctx)
-	if rootSpan == nil || !rootSpan.IsRecording() {
+//
+// The description is wrapped around the error rather than left to carry the status alone, because the
+// status description does not survive. Middleware which records an error goes on to respond 5xx, tracing
+// middleware above sets the span status from the response code once the chain returns, and the SDK lets
+// an equal status code overwrite, which replaces the description with the empty string. The exception
+// event is not touched by anything above, so that is where the description has to be.
+func recordErrorOnSpan(ctx context.Context, err error, description string) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
 		return
 	}
 
-	rootSpan.RecordError(err)
-	rootSpan.SetStatus(codes.Error, description)
+	span.RecordError(fmt.Errorf("%v: %w", description, err))
+	span.SetStatus(codes.Error, description)
 }

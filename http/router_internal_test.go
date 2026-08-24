@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -110,6 +111,21 @@ func TestTracingMux(t *testing.T) {
 			}
 		})
 	}
+
+	// The mux is exported, so running it under some other OpenTelemetry middleware is a valid use of the
+	// public API and the timing has to land on that middleware's span rather than going nowhere.
+	t.Run("times a handler under another tracing middleware", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		mux := &TracingMux{mux: chi.NewRouter()}
+		mux.Get("/thing", func(w http.ResponseWriter, r *http.Request) {})
+
+		h := otelhttp.NewHandler(mux, "GET /thing")
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/thing", nil))
+
+		is.True(t, oteltest.HasAttributeKey(onlyEndedSpan(t, sr).Attributes(), "handler.duration_ms"),
+			"expected handler.duration_ms")
+	})
 
 	t.Run("times a handler which panics, since the measurement is deferred", func(t *testing.T) {
 		sr := oteltest.NewSpanRecorder(t)
