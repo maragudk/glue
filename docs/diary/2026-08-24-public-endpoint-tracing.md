@@ -174,3 +174,53 @@ The guarantee is narrower than "the client's baggage never reaches a handler", a
 ### Future work
 
 If baggage from an upstream extractor ever matters, the subtraction described above is the way to close it.
+
+## Step 4: Discarding all baggage instead
+
+**Author:** public-endpoint
+
+### Prompt Context
+
+**Verbatim prompt:** "Markus's call on the baggage shape: discard ALL baggage in the middleware, unconditionally. glue apps don't use baggage at all; preserving app/in-process baggage is speculative machinery. YAGNI — it can be re-added if ever needed. Changes to PR 198: 1. Simplify `keepOwnBaggage` in `http/otel.go`: after delegating `Extract`, return the context with baggage removed entirely (`baggage.ContextWithoutBaggage`), instead of restoring pre-extraction baggage. Rename the type accordingly (e.g. `discardBaggage` or similar). Keep it as a propagator via `WithPropagators` — that shape stays right (client baggage never reaches samplers/processors). 2. This also closes the documented boundary: baggage extracted by a consumer's own middleware above ours gets dropped too, which is now the intended behavior. [...] 3. Tests: drop/invert the "process's own baggage kept" and "handler-set baggage propagates" subtests as appropriate — the invariant is now: no baggage in the handler context regardless of source above the middleware. [...]"
+
+**Interpretation:** Replace the careful preservation of in-process baggage with a flat discard, keeping the propagator shape, and make the docs and tests say the simpler thing.
+
+**Inferred intent:** Less machinery for a case nothing has, and one invariant with no hole in it.
+
+### What I did
+
+`keepOwnBaggage` in `/http/otel.go` became `discardBaggage`: `Extract` still delegates to the global propagator, then returns `baggage.ContextWithoutBaggage(ctx)` rather than putting the previous baggage back. The `Len() == 0` fast path stayed, now checking only the extracted context. `Inject` and `Fields` still delegate whole.
+
+In `/http/otel_test.go` the "keeps baggage set in this process" table inverted into "discards baggage already in the context", keeping all three rows — no header, a header, a malformed header — since those are the branches where the discard rather than the extraction is doing the work. The outbound test dropped its handler-set member and now asserts the injected carrier has no baggage at all, with a `traceparent` assertion beside it so the empty result cannot pass for the wrong reason. `/docs/decisions.md` records the flat discard, with the preserving version as the rejected alternative.
+
+Self-review found four things, all fixed. The doc comment justified the behaviour with "there is nothing here which wants baggage across the HTTP layer", which is this project's appetite rather than something a reader of the exported godoc can act on; it now gives the reason which holds for anyone — once extraction has run, nothing below can tell the request's baggage from the process's own. `/docs/decisions.md` credited `Inject` and `Fields` delegating for the queue being unaffected, which is wrong: `otelhttp` only ever extracts with the propagator it is given, and the queue is unaffected because `/jobs/runner.go` calls the global propagator directly. Every baggage assertion is now an absence, so `usePropagators` asserts the propagator under test actually carries baggage. And the trace-root test now sends a `baggage` header alongside its `traceparent`, so the discard is pinned as not taking the trace context with it.
+
+`go test -shuffle on ./...` passes, `golangci-lint run ./http` reports 0 issues.
+
+### Why
+
+The preserving version bought one speculative case and paid for it with a hole: it told baggage apart by when it entered the context, so an upstream extractor's baggage passed as the process's own. Discarding everything has neither.
+
+### What worked
+
+Mutation checks again. Removing `otelhttp.WithPropagators(discardBaggage{})` fails all five baggage subtests, including `Expected "", but got "user.id=evil"` on the outbound one. Pointing `usePropagators` at `propagation.TraceContext{}` alone fails with `expected the propagator under test to carry baggage`, which is the point of adding it.
+
+### What didn't work
+
+Nothing failed. The simplification is smaller than what it replaced: `Extract` lost a variable and a branch, and `/http/otel.go` lost the paragraph explaining a boundary which no longer exists.
+
+### What I learned
+
+An absence is a weak assertion. Once every baggage test asserts "there is none", the harness itself has to be pinned, or a propagator which never carried baggage would satisfy all of them.
+
+### What was tricky
+
+Nothing in the code. The care went into the prose: the doc comment had to give a reason which holds for a reader who is not this project, and the decision entry had to stop crediting the wrong mechanism for the queue being unaffected.
+
+### What warrants review
+
+`discardBaggage` in `/http/otel.go`, and whether the flat invariant reads right on `OpenTelemetry`. Baggage set while handling a request still propagates from there; that is a consequence of where the discard sits, not a feature, and neither the doc comment nor the tests claim it.
+
+### Future work
+
+None. Carrying baggage through the HTTP layer would be a deliberate change if something ever needs it.

@@ -22,31 +22,28 @@ import (
 	glueotel "maragu.dev/glue/otel"
 )
 
-// keepOwnBaggage propagates as the global [propagation.TextMapPropagator] does, except that extracting
-// leaves the context's baggage as it found it, so only baggage this process set survives. Everything else
-// the request carried is extracted as usual. Undoing it here rather than below means the baggage is gone
-// before the server span starts, so nothing sampling or processing that span sees it either.
-type keepOwnBaggage struct{}
+// discardBaggage propagates as the global [propagation.TextMapPropagator] does, except that extracting
+// leaves no baggage in the context at all. Everything else the request carried is extracted as usual.
+// Discarding during extraction rather than below means the baggage is gone before the server span starts,
+// so nothing sampling or processing that span sees it either.
+type discardBaggage struct{}
 
-func (keepOwnBaggage) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
-	own := baggage.FromContext(ctx)
-
+func (discardBaggage) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
 	ctx = otel.GetTextMapPropagator().Extract(ctx, carrier)
 
-	// Neither side has any, so the context is already what it should be, and a request without baggage
-	// is the common one
-	if own.Len() == 0 && baggage.FromContext(ctx).Len() == 0 {
+	// Nothing to remove, which is the common case
+	if baggage.FromContext(ctx).Len() == 0 {
 		return ctx
 	}
 
-	return baggage.ContextWithBaggage(ctx, own)
+	return baggage.ContextWithoutBaggage(ctx)
 }
 
-func (keepOwnBaggage) Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
+func (discardBaggage) Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
 	otel.GetTextMapPropagator().Inject(ctx, carrier)
 }
 
-func (keepOwnBaggage) Fields() []string {
+func (discardBaggage) Fields() []string {
 	return otel.GetTextMapPropagator().Fields()
 }
 
@@ -60,11 +57,10 @@ func (keepOwnBaggage) Fields() []string {
 // correlation without handing that over. A parent already in the request context, from tracing above this
 // middleware in the same process, is a parent as usual.
 //
-// Baggage the request carried is discarded for the same reason, rather than travelling on the context into
-// handlers and out again through anything this process injects the propagator into. It is client-controlled
-// state, and nothing below has a way to tell it from its own. Baggage this process set before the request
-// reached the middleware, or sets while handling it, is untouched. The two are told apart by when they
-// entered the context, so tracing above this middleware which extracts baggage itself defeats the discard.
+// No baggage survives the middleware, whether the request carried it or something above put it in the
+// context. Baggage on a request is client-controlled state which would otherwise travel on into handlers
+// and out again through anything this process injects the propagator into, and once it has been extracted
+// nothing below has a way to tell it from the process's own.
 func OpenTelemetry(next http.Handler) http.Handler {
 	return otelhttp.NewHandler(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -171,7 +167,7 @@ func OpenTelemetry(next http.Handler) http.Handler {
 		otelhttp.WithPublicEndpointFn(func(r *http.Request) bool {
 			return trace.SpanContextFromContext(r.Context()).IsRemote()
 		}),
-		otelhttp.WithPropagators(keepOwnBaggage{}),
+		otelhttp.WithPropagators(discardBaggage{}),
 	)
 }
 

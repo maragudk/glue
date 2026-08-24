@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -343,6 +344,8 @@ func TestOpenTelemetry(t *testing.T) {
 				req := httptest.NewRequest(http.MethodGet, "/things/42", nil)
 				req.Header.Set("traceparent", "00-"+traceID.String()+"-"+spanID.String()+"-"+test.traceFlags)
 				req.Header.Set("tracestate", "vendor=abc123")
+				// Discarding the baggage must not take the trace context with it
+				req.Header.Set("baggage", "user.id=evil")
 				mux.ServeHTTP(httptest.NewRecorder(), req)
 
 				span := lastEndedSpan(t, sr)
@@ -441,10 +444,9 @@ func TestOpenTelemetry(t *testing.T) {
 		is.Equal(t, 0, handlerBaggage.Len())
 	})
 
-	// What the request brought is discarded, baggage which is this process's own is not, and once the
-	// propagator has extracted there is nothing in the context to tell them apart by. A request carrying
-	// baggage is where a client's would survive, and one carrying none is where ours would be lost.
-	t.Run("keeps baggage set in this process", func(t *testing.T) {
+	// Baggage in the context above the middleware goes the same way as the request's own, so that what
+	// reaches a handler does not depend on which of the two a client managed to get its baggage into.
+	t.Run("discards baggage already in the context", func(t *testing.T) {
 		tests := []struct {
 			name    string
 			baggage string
@@ -470,18 +472,18 @@ func TestOpenTelemetry(t *testing.T) {
 
 				member, err := baggage.NewMember("tenant", "acme")
 				is.NotError(t, err)
-				ourBaggage, err := baggage.New(member)
+				contextBaggage, err := baggage.New(member)
 				is.NotError(t, err)
 
 				req := httptest.NewRequest(http.MethodGet, "/things/42", nil).
-					WithContext(baggage.ContextWithBaggage(t.Context(), ourBaggage))
+					WithContext(baggage.ContextWithBaggage(t.Context(), contextBaggage))
 				if test.baggage != "" {
 					req.Header.Set("baggage", test.baggage)
 				}
 				mux.ServeHTTP(httptest.NewRecorder(), req)
 
 				is.True(t, served, "expected the handler to have run")
-				is.Equal(t, "tenant=acme", handlerBaggage.String())
+				is.Equal(t, 0, handlerBaggage.Len())
 			})
 		}
 	})
@@ -513,8 +515,9 @@ func TestOpenTelemetry(t *testing.T) {
 		is.Equal(t, 0, handlerBaggage.Len())
 	})
 
-	// Baggage is only worth keeping if it still travels, and only worth discarding if the client's does not
-	t.Run("lets a handler add baggage which propagates onwards without the client's", func(t *testing.T) {
+	// The context below the middleware is what anything the request reaches propagates from, which is how
+	// baggage would travel on out of this service if it survived
+	t.Run("does not propagate onwards the baggage the request carried", func(t *testing.T) {
 		oteltest.NewSpanRecorder(t)
 		usePropagators(t)
 
@@ -522,22 +525,16 @@ func TestOpenTelemetry(t *testing.T) {
 		mux := chi.NewMux()
 		mux.Use(gluehttp.OpenTelemetry)
 		mux.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {
-			member, err := baggage.NewMember("job.id", "123")
-			is.NotError(t, err)
-			// Added to what the middleware left in the context, rather than replacing it, so the client's
-			// baggage would come along if any had survived
-			b, err := baggage.FromContext(r.Context()).SetMember(member)
-			is.NotError(t, err)
-
-			// What an outbound request or a job enqueued from the handler carries with it
-			otel.GetTextMapPropagator().Inject(baggage.ContextWithBaggage(r.Context(), b), carrier)
+			// What an outbound request or a job enqueued while handling this one carries with it
+			otel.GetTextMapPropagator().Inject(r.Context(), carrier)
 		})
 
 		req := httptest.NewRequest(http.MethodGet, "/things/42", nil)
 		req.Header.Set("baggage", "user.id=evil")
 		mux.ServeHTTP(httptest.NewRecorder(), req)
 
-		is.Equal(t, "job.id=123", carrier.Get("baggage"))
+		is.Equal(t, "", carrier.Get("baggage"))
+		is.True(t, carrier.Get("traceparent") != "", "expected the trace context to propagate")
 	})
 
 	// This is what lets everything below write telemetry without being handed a span: whatever the context
@@ -574,6 +571,11 @@ func usePropagators(t *testing.T) {
 	t.Helper()
 
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+
+	// Every assertion about baggage below the middleware is that there is none, which a propagator not
+	// carrying baggage in the first place would satisfy for the wrong reason
+	is.True(t, slices.Contains(otel.GetTextMapPropagator().Fields(), "baggage"),
+		"expected the propagator under test to carry baggage")
 
 	t.Cleanup(func() {
 		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
