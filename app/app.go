@@ -9,6 +9,8 @@ import (
 	"syscall"
 
 	"github.com/honeycombio/otel-config-go/otelconfig"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/resource"
 	"golang.org/x/sync/errgroup"
 	"maragu.dev/env"
 	"maragu.dev/errors"
@@ -46,12 +48,12 @@ func Start(startCallback StartFunc) {
 	})
 
 	name := env.GetStringOrDefault("APP_NAME", "App")
-	version := getVersion()
+	version, buildTime := getVersionAndBuildTime()
 	log.InfoContext(ctx, "Starting app", "name", name, "version", version)
 
 	// We call the callback so it can return errors and we can handle it just here.
 	// Also makes it easier to test starting the app if needed, because tests don't handle os.Exit well.
-	if err := start(ctx, log, name, version, startCallback); err != nil {
+	if err := start(ctx, log, name, version, buildTime, startCallback); err != nil {
 		log.ErrorContext(ctx, "Error starting app", "name", name, "error", err)
 		os.Exit(1)
 	}
@@ -59,11 +61,20 @@ func Start(startCallback StartFunc) {
 	log.InfoContext(ctx, "Stopped app", "name", name)
 }
 
-func start(ctx context.Context, log *slog.Logger, name, version string, startCallback StartFunc) error {
+func start(ctx context.Context, log *slog.Logger, name, version, buildTime string, startCallback StartFunc) error {
+	if err := raiseSpanAttributeCountLimit(); err != nil {
+		return err
+	}
+
 	otelShutdown, err := otelconfig.ConfigureOpenTelemetry(
 		otelconfig.WithServiceName(name), otelconfig.WithServiceVersion(version),
 		otelconfig.WithMetricsEnabled(false),
 		otelconfig.WithExporterProtocol(otelconfig.ProtocolHTTPProto), otelconfig.WithExporterEndpoint("https://api.honeycomb.io"),
+		otelconfig.WithResourceOption(resource.WithProcessRuntimeName()),
+		otelconfig.WithResourceOption(resource.WithProcessRuntimeVersion()),
+		// service.approx_build_time is the vcs.time build setting, which is the commit timestamp rather than
+		// the build timestamp: read it as "the code is at least this old", never as "this binary was built then".
+		otelconfig.WithResourceOption(resource.WithAttributes(attribute.String("service.approx_build_time", buildTime))),
 	)
 	if err != nil {
 		return errors.Wrap(err, "error configuring open telemetry")
@@ -84,14 +95,50 @@ func start(ctx context.Context, log *slog.Logger, name, version string, startCal
 	return eg.Wait()
 }
 
-// getVersion from the VCS revision stamped into the build info, or "unknown" if the binary carries no such stamp.
-func getVersion() string {
-	if info, ok := debug.ReadBuildInfo(); ok {
-		for _, setting := range info.Settings {
-			if setting.Key == "vcs.revision" {
-				return setting.Value
-			}
+// raiseSpanAttributeCountLimit above the SDK default of 128, which is a low ceiling for wide events:
+// a main span carries dozens of attributes before an application adds any of its own, so the default
+// acts as a design constraint rather than the runaway backstop it is meant to be. Attributes cost
+// nothing until they exist, and the backend accepts far more than this per event.
+//
+// This goes through the environment rather than a span limits option because
+// [otelconfig.ConfigureOpenTelemetry] exposes none: it builds its tracer provider from its own
+// config, which has no field for limits, so there is nowhere to pass one. The environment variable
+// is the SDK's documented alternative, read when the provider is constructed.
+//
+// An operator who sets either key keeps their value. The SDK reads the span-specific key first and
+// falls back to the general one, and counts an empty value as unset, so both are checked that way here.
+func raiseSpanAttributeCountLimit() error {
+	if os.Getenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT") != "" || os.Getenv("OTEL_ATTRIBUTE_COUNT_LIMIT") != "" {
+		return nil
+	}
+
+	if err := os.Setenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", "512"); err != nil {
+		return errors.Wrap(err, "error setting span attribute count limit")
+	}
+
+	return nil
+}
+
+// getVersionAndBuildTime from the VCS information stamped into the build info.
+// The version is the VCS revision and the build time is its commit timestamp in RFC 3339 format.
+// Both need VCS metadata in the build context, so they are stamped together, and both fall back to
+// "unknown" when the binary carries no such stamp.
+func getVersionAndBuildTime() (string, string) {
+	version, buildTime := "unknown", "unknown"
+
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return version, buildTime
+	}
+
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			version = setting.Value
+		case "vcs.time":
+			buildTime = setting.Value
 		}
 	}
-	return "unknown"
+
+	return version, buildTime
 }

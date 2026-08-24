@@ -11,8 +11,6 @@ import (
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/go-chi/chi/v5"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
 	"maragu.dev/httph"
@@ -29,7 +27,6 @@ type Server struct {
 	permissionsGetter  permissionsGetter
 	r                  *Router
 	server             *http.Server
-	tracer             trace.Tracer
 	userActiveChecker  userActiveChecker
 }
 
@@ -68,9 +65,7 @@ func NewServer(opts NewServerOptions) *Server {
 	sm.Cookie.Name = fmt.Sprintf("session_%x", sha256.Sum256([]byte(opts.BaseURL)))
 	sm.Cookie.Secure = opts.SecureCookie
 
-	tracer := otel.Tracer("maragu.dev/glue/http")
-
-	mux := &TracingMux{mux: chi.NewRouter(), tracer: tracer}
+	mux := &TracingMux{mux: chi.NewRouter()}
 
 	return &Server{
 		baseURL:            opts.BaseURL,
@@ -88,7 +83,6 @@ func NewServer(opts NewServerOptions) *Server {
 			ReadTimeout:  10 * time.Second,
 			WriteTimeout: opts.WriteTimeout,
 		},
-		tracer:            tracer,
 		userActiveChecker: opts.UserActiveChecker,
 	}
 }

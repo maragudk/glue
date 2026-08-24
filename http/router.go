@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/go-chi/chi/v5"
-	"go.opentelemetry.io/otel/trace"
 	. "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/http"
 
@@ -104,10 +104,12 @@ func GetPathParam(r *http.Request, name string) string {
 	return chi.URLParam(r, name)
 }
 
-// TracingMux is a decorator that satisfies [chi.Router] but adds tracing to all HTTP methods.
+// TracingMux is a decorator that satisfies [chi.Router] but times the handler registered for each
+// HTTP method. Registration methods which take a handler wrap it; [TracingMux.Mount] and
+// [TracingMux.Use] pass theirs through untouched, and [TracingMux.Group], [TracingMux.Route] and
+// [TracingMux.With] hand out a decorator over the sub-router, so a handler is wrapped exactly once.
 type TracingMux struct {
-	mux    chi.Router
-	tracer trace.Tracer
+	mux chi.Router
 }
 
 var _ chi.Router = (*TracingMux)(nil)
@@ -137,33 +139,22 @@ func (t *TracingMux) Use(middlewares ...func(http.Handler) http.Handler) {
 }
 
 func (t *TracingMux) With(middlewares ...func(http.Handler) http.Handler) chi.Router {
-	return &TracingMux{
-		mux:    t.mux.With(middlewares...),
-		tracer: t.tracer,
-	}
+	return &TracingMux{mux: t.mux.With(middlewares...)}
 }
 
 func (t *TracingMux) Group(fn func(r chi.Router)) chi.Router {
 	return &TracingMux{
 		mux: t.mux.Group(func(r chi.Router) {
-			fn(&TracingMux{
-				mux:    r,
-				tracer: t.tracer,
-			})
+			fn(&TracingMux{mux: r})
 		}),
-		tracer: t.tracer,
 	}
 }
 
 func (t *TracingMux) Route(pattern string, fn func(r chi.Router)) chi.Router {
 	return &TracingMux{
 		mux: t.mux.Route(pattern, func(r chi.Router) {
-			fn(&TracingMux{
-				mux:    r,
-				tracer: t.tracer,
-			})
+			fn(&TracingMux{mux: r})
 		}),
-		tracer: t.tracer,
 	}
 }
 
@@ -239,13 +230,22 @@ func (t *TracingMux) wrapHandler(h http.Handler) http.Handler {
 	return http.Handler(t.wrapHandlerFunc(h.ServeHTTP))
 }
 
+// wrapHandlerFunc to time the handler and record it as handler.duration_ms on the current span, which
+// under [OpenTelemetry] is the main span. See [setSpanDuration] for the contract.
+//
+// The measurement runs from when the registered handler is entered until it returns,
+// so whatever was composed into that handler — including any hand-wrapped middleware — is included.
+//
+// It records in a defer, so a panicking handler is still measured. There is no check for whether tracing
+// is configured, because there is nothing to check at registration time: with no span on the request there
+// is nowhere to write, and [setSpanDuration] returns without doing anything.
 func (t *TracingMux) wrapHandlerFunc(h http.HandlerFunc) http.HandlerFunc {
-	if t.tracer == nil {
-		return h
-	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, span := t.tracer.Start(r.Context(), "http.Handler")
-		defer span.End()
-		h(w, r.WithContext(ctx))
+		start := time.Now()
+		defer func() {
+			setSpanDuration(r.Context(), "handler.duration_ms", time.Since(start))
+		}()
+
+		h(w, r)
 	}
 }

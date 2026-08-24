@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	"maragu.dev/goqite"
 	"maragu.dev/goqite/jobs"
+
+	glueotel "maragu.dev/glue/otel"
 )
 
 type Runner = jobs.Runner
@@ -118,7 +119,7 @@ func WithTracing(operationName string, fn Func) Func {
 
 		ctx, span := tracer.Start(ctx, operationName,
 			trace.WithSpanKind(trace.SpanKindInternal),
-			trace.WithAttributes(attribute.Bool("main", true)),
+			trace.WithAttributes(glueotel.MainSpanAttributes()...),
 		)
 		defer span.End()
 

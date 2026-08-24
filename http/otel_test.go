@@ -2,6 +2,7 @@ package http_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,7 +11,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 	"maragu.dev/is"
 
 	gluehttp "maragu.dev/glue/http"
@@ -49,7 +51,45 @@ func TestOpenTelemetry(t *testing.T) {
 		}
 	})
 
-	t.Run("sets main attribute", func(t *testing.T) {
+	// A router which has already matched before the middleware runs sets [http.Request.Pattern] on the
+	// request the middleware is handed, so these cover the naming against a router above the middleware
+	// as well as below it.
+	t.Run("sets span name to method and route pattern below another router", func(t *testing.T) {
+		t.Run("mounted under an outer mux", func(t *testing.T) {
+			sr := oteltest.NewSpanRecorder(t)
+
+			inner := chi.NewMux()
+			inner.Use(gluehttp.OpenTelemetry)
+			inner.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {})
+
+			outer := chi.NewMux()
+			outer.Mount("/api", inner)
+
+			outer.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/things/42", nil))
+
+			span := lastEndedSpan(t, sr)
+			is.Equal(t, "GET /api/things/{id}", span.Name())
+			is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.HTTPRoute("/api/things/{id}")))
+		})
+
+		t.Run("inside a subrouter", func(t *testing.T) {
+			sr := oteltest.NewSpanRecorder(t)
+
+			mux := chi.NewMux()
+			mux.Route("/api", func(r chi.Router) {
+				r.Use(gluehttp.OpenTelemetry)
+				r.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {})
+			})
+
+			mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/things/42", nil))
+
+			span := lastEndedSpan(t, sr)
+			is.Equal(t, "GET /api/things/{id}", span.Name())
+			is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.HTTPRoute("/api/things/{id}")))
+		})
+	})
+
+	t.Run("sets main span attributes", func(t *testing.T) {
 		sr := oteltest.NewSpanRecorder(t)
 
 		mux := chi.NewMux()
@@ -61,6 +101,55 @@ func TestOpenTelemetry(t *testing.T) {
 
 		span := lastEndedSpan(t, sr)
 		is.True(t, oteltest.HasAttribute(span.Attributes(), attribute.Bool("main", true)))
+		is.True(t, oteltest.HasAttributeKey(span.Attributes(), "uptime_sec"), "expected uptime_sec attribute")
+		is.True(t, oteltest.HasAttributeKey(span.Attributes(), "uptime_sec_log_10"), "expected uptime_sec_log_10 attribute")
+	})
+
+	t.Run("sets main span attributes even when the handler panics", func(t *testing.T) {
+		// There is no recovery middleware in the chain, so a panicking handler unwinds past the
+		// middleware. The span is still ended and exported, and a panicking request is still a unit
+		// of work, so it has to stay countable.
+		sr := oteltest.NewSpanRecorder(t)
+
+		mux := chi.NewMux()
+		mux.Use(gluehttp.OpenTelemetry)
+		mux.Get("/", func(w http.ResponseWriter, r *http.Request) {
+			panic("the parrot has ceased to be")
+		})
+
+		func() {
+			defer func() {
+				is.True(t, recover() != nil, "expected the panic to reach the caller")
+			}()
+			mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+		}()
+
+		span := lastEndedSpan(t, sr)
+		is.True(t, oteltest.HasAttribute(span.Attributes(), attribute.Bool("main", true)), "expected main attribute")
+		is.True(t, oteltest.HasAttributeKey(span.Attributes(), "uptime_sec"), "expected uptime_sec attribute")
+	})
+
+	t.Run("keeps the main span attributes when the request carries a flood of query parameters", func(t *testing.T) {
+		// The SDK caps a span at 128 attributes by default and drops everything past it, so a request
+		// which mints one attribute per query parameter could push main and http.route off the span.
+		sr := oteltest.NewSpanRecorder(t)
+
+		mux := chi.NewMux()
+		mux.Use(gluehttp.OpenTelemetry)
+		mux.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {})
+
+		params := make([]string, 0, 200)
+		for i := range 200 {
+			params = append(params, fmt.Sprintf("p%v=v%v", i, i))
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/things/42?"+strings.Join(params, "&"), nil)
+		mux.ServeHTTP(httptest.NewRecorder(), req)
+
+		span := lastEndedSpan(t, sr)
+		is.True(t, oteltest.HasAttribute(span.Attributes(), attribute.Bool("main", true)), "expected main attribute")
+		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.HTTPRoute("/things/{id}")), "expected http.route attribute")
+		is.True(t, oteltest.HasAttributeKey(span.Attributes(), "url.query"), "expected url.query attribute")
 	})
 
 	t.Run("sets http.route attribute", func(t *testing.T) {
@@ -75,6 +164,34 @@ func TestOpenTelemetry(t *testing.T) {
 
 		span := lastEndedSpan(t, sr)
 		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.HTTPRoute("/users/{id}")))
+	})
+
+	t.Run("names the span with just the method when no route matches", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		mux := chi.NewMux()
+		mux.Use(gluehttp.OpenTelemetry)
+		mux.Get("/things", func(w http.ResponseWriter, r *http.Request) {})
+
+		req := httptest.NewRequest(http.MethodGet, "/nope", nil)
+		mux.ServeHTTP(httptest.NewRecorder(), req)
+
+		span := lastEndedSpan(t, sr)
+		// Exactly the method, so a trailing space fails here
+		is.Equal(t, "GET", span.Name())
+		is.True(t, !oteltest.HasAttributeKey(span.Attributes(), "http.route"), "unexpected http.route attribute")
+	})
+
+	t.Run("names the span with just the method when there is no chi route context at all", func(t *testing.T) {
+		// The middleware is exported, so it can be applied to a handler outside a chi router
+		sr := oteltest.NewSpanRecorder(t)
+
+		h := gluehttp.OpenTelemetry(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/anything", nil))
+
+		span := lastEndedSpan(t, sr)
+		is.Equal(t, "POST", span.Name())
+		is.True(t, !oteltest.HasAttributeKey(span.Attributes(), "http.route"), "unexpected http.route attribute")
 	})
 
 	t.Run("parses user agent attributes", func(t *testing.T) {
@@ -132,36 +249,33 @@ func TestOpenTelemetry(t *testing.T) {
 		}
 	})
 
-	t.Run("adds query parameters as attributes with lowercased keys", func(t *testing.T) {
+	t.Run("sets the query string as a single attribute", func(t *testing.T) {
 		sr := oteltest.NewSpanRecorder(t)
 
 		mux := chi.NewMux()
 		mux.Use(gluehttp.OpenTelemetry)
 		mux.Get("/search", func(w http.ResponseWriter, r *http.Request) {})
 
-		req := httptest.NewRequest(http.MethodGet, "/search?q=hello&PageSize=10", nil)
+		// Q and q are different parameters, which one attribute per key could not represent
+		req := httptest.NewRequest(http.MethodGet, "/search?q=hello&Q=goodbye&PageSize=10", nil)
 		mux.ServeHTTP(httptest.NewRecorder(), req)
 
 		span := lastEndedSpan(t, sr)
-		attrs := span.Attributes()
-		is.True(t, oteltest.HasAttribute(attrs, attribute.StringSlice("url.query.q", []string{"hello"})))
-		is.True(t, oteltest.HasAttribute(attrs, attribute.StringSlice("url.query.pagesize", []string{"10"})))
+		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.URLQuery("q=hello&Q=goodbye&PageSize=10")))
 	})
 
-	t.Run("does not add query attributes when no query parameters", func(t *testing.T) {
+	t.Run("sets no query attribute when there is no query string", func(t *testing.T) {
 		sr := oteltest.NewSpanRecorder(t)
 
 		mux := chi.NewMux()
 		mux.Use(gluehttp.OpenTelemetry)
-		mux.Get("/", func(w http.ResponseWriter, r *http.Request) {})
+		mux.Get("/search", func(w http.ResponseWriter, r *http.Request) {})
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/search", nil)
 		mux.ServeHTTP(httptest.NewRecorder(), req)
 
 		span := lastEndedSpan(t, sr)
-		for _, attr := range span.Attributes() {
-			is.True(t, !strings.HasPrefix(string(attr.Key), "url.query."), "unexpected query attribute")
-		}
+		is.True(t, !oteltest.HasAttributeKey(span.Attributes(), "url.query"), "unexpected url.query attribute")
 	})
 
 	t.Run("sets client disconnected attribute when the request context is canceled", func(t *testing.T) {
@@ -195,28 +309,26 @@ func TestOpenTelemetry(t *testing.T) {
 		is.True(t, !oteltest.HasAttributeKey(span.Attributes(), "http.client_disconnected"), "unexpected client disconnected attribute")
 	})
 
-	t.Run("stores root span in context", func(t *testing.T) {
-		oteltest.NewSpanRecorder(t)
-
-		var rootSpan bool
+	// This is what lets everything below write telemetry without being handed a span: whatever the context
+	// carries below the middleware is the main span itself.
+	t.Run("makes the main span the current span for handlers below it", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
 
 		mux := chi.NewMux()
 		mux.Use(gluehttp.OpenTelemetry)
-		mux.Get("/", func(w http.ResponseWriter, r *http.Request) {
-			rootSpan = gluehttp.GetRootSpanFromContext(r.Context()) != nil
+		mux.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {
+			trace.SpanFromContext(r.Context()).SetAttributes(attribute.Bool("from.handler", true))
 		})
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequest(http.MethodGet, "/things/42", nil)
 		mux.ServeHTTP(httptest.NewRecorder(), req)
 
-		is.True(t, rootSpan, "expected root span in context")
-	})
-}
-
-func TestGetRootSpanFromContext(t *testing.T) {
-	t.Run("returns nil when no root span in context", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		is.True(t, gluehttp.GetRootSpanFromContext(req.Context()) == nil)
+		// The write has to have landed on the one span marked main, not merely on some recording span
+		span := lastEndedSpan(t, sr)
+		is.Equal(t, "GET /things/{id}", span.Name())
+		is.True(t, oteltest.HasAttribute(span.Attributes(), attribute.Bool("main", true)))
+		is.True(t, oteltest.HasAttribute(span.Attributes(), attribute.Bool("from.handler", true)),
+			"expected the handler to have written on the main span")
 	})
 }
 
@@ -230,4 +342,22 @@ func lastEndedSpan(t *testing.T, sr interface {
 		t.Fatal("expected at least one ended span")
 	}
 	return spans[len(spans)-1]
+}
+
+// endedSpanNamed returns the ended span with the given name, failing the test if there is no such span.
+func endedSpanNamed(t *testing.T, sr interface {
+	Ended() []sdktrace.ReadOnlySpan
+}, name string) sdktrace.ReadOnlySpan {
+	t.Helper()
+
+	names := make([]string, 0, len(sr.Ended()))
+	for _, span := range sr.Ended() {
+		if span.Name() == name {
+			return span
+		}
+		names = append(names, span.Name())
+	}
+
+	t.Fatalf("no ended span named %v, recorded %v", name, names)
+	return nil
 }
