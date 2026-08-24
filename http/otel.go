@@ -90,24 +90,43 @@ func OpenTelemetry(next http.Handler) http.Handler {
 				span.SetAttributes(semconv.DeviceModelName(ua.Device))
 			}
 
+			// Everything which needs the request handled first runs in a defer, so a panicking handler
+			// leaves a span which can still be attributed to a route instead of one which cannot.
+			// Nothing recovers panics between here and the server, so this is the last chance to
+			// describe the request on the span.
+			defer func() {
+				v := recover()
+
+				// Record whether the client disconnected before we responded. The status code is handled
+				// at the router (see [adaptPage]); here we just keep the signal queryable on the span.
+				if contextCanceled(r.Context().Err()) {
+					span.SetAttributes(attribute.Bool("http.client_disconnected", true))
+				}
+
+				// The route is only known now that the router below has matched, and the formatter below cannot
+				// be relied on to pick it up: its second run happens only when [http.Request.Pattern] reaches
+				// back up here, which any middleware in between replacing the request prevents. So the name is
+				// set directly. http.route is Conditionally Required "if and only if it's available", so it
+				// stays off entirely when nothing matched rather than going out as an empty string, which would
+				// look like a real value when grouping. A panic mid-routing can leave the pattern partial,
+				// which still says more about the request than nothing does.
+				span.SetName(spanName(r))
+				if routePattern := chi.RouteContext(r.Context()).RoutePattern(); routePattern != "" {
+					span.SetAttributes(semconv.HTTPRoute(routePattern))
+				}
+
+				if v == nil {
+					return
+				}
+
+				recordPanicOnSpan(span, v)
+
+				// Re-panic so the server still handles this as the panic it is, logging a stack which
+				// still reaches down to the handler, and closing the connection without a response.
+				panic(v)
+			}()
+
 			next.ServeHTTP(w, r)
-
-			// Record whether the client disconnected before we responded. The status code is handled
-			// at the router (see [adaptPage]); here we just keep the signal queryable on the span.
-			if contextCanceled(r.Context().Err()) {
-				span.SetAttributes(attribute.Bool("http.client_disconnected", true))
-			}
-
-			// The route is only known now that the router below has matched, and the formatter below cannot
-			// be relied on to pick it up: its second run happens only when [http.Request.Pattern] reaches
-			// back up here, which any middleware in between replacing the request prevents. So the name is
-			// set directly. http.route is Conditionally Required "if and only if it's available", so it
-			// stays off entirely when nothing matched rather than going out as an empty string, which would
-			// look like a real value when grouping.
-			span.SetName(spanName(r))
-			if routePattern := chi.RouteContext(r.Context()).RoutePattern(); routePattern != "" {
-				span.SetAttributes(semconv.HTTPRoute(routePattern))
-			}
 		}),
 		// The operation name is unused, since [spanName] decides the name from the request. The formatter
 		// is not optional though. [otelhttp.WithSpanNameFormatter] documents that it runs a second time
@@ -170,6 +189,34 @@ func setSpanDuration(ctx context.Context, key string, d time.Duration) {
 	}
 
 	span.SetAttributes(attribute.Float64(key, float64(d.Nanoseconds())/float64(time.Millisecond)))
+}
+
+// recordPanicOnSpan as an exception event with an error status, for a value recovered on the way out of
+// a handler. A panic value which is already an error is recorded as it is, so exception.type keeps naming
+// the type the handler panicked with, and only anything else is wrapped. The stack trace is the one being
+// unwound, which is the only record of where the panic came from once the span is all that is left of
+// the request.
+//
+// The SDK records an exception of its own when a panic unwinds through [trace.Span.End], so a panicking
+// request can end up with two exception events. Recording here anyway, because that behaviour belongs to
+// whichever tracer provider the application configured: it can be turned off, and it only fires where
+// End is deferred directly. The status is never set by it, and neither is the stack trace unless the
+// caller asked End for one, which the instrumentation around this middleware does not.
+//
+// [http.ErrAbortHandler] is left unrecorded, because it is how a handler says it is giving up on purpose
+// and the server suppresses it as well, so counting it would put deliberate aborts in the error rate.
+func recordPanicOnSpan(span trace.Span, v any) {
+	err, ok := v.(error)
+	if !ok {
+		err = fmt.Errorf("panic: %v", v)
+	}
+
+	if errors.Is(err, http.ErrAbortHandler) {
+		return
+	}
+
+	span.RecordError(err, trace.WithStackTrace(true))
+	span.SetStatus(codes.Error, "panic")
 }
 
 // recordErrorOnSpan with the given description, on the current span in the context, if it is recording.
