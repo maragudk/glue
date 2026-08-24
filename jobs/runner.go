@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
@@ -124,32 +123,20 @@ func WithTracing(operationName string, fn Func) Func {
 		)
 		defer span.End()
 
-		// The runner recovers a panicking job and logs it, so this is the last chance to describe the
-		// panic on the span. A panic value which is already an error is recorded as it is, so
-		// exception.type keeps naming the type the job panicked with, and only anything else is wrapped.
-		// The stack trace is the one being unwound, which is the only record of where the panic came from
-		// once the span is all that is left of the job.
-		//
-		// The SDK records an exception of its own when a panic unwinds through [trace.Span.End], so a
-		// panicking job can end up with two exception events. Recording here anyway, because that
-		// behaviour belongs to whichever tracer provider the application configured and can be turned
-		// off, and it sets neither the status nor the stack trace.
+		// A panicking job returns no error, so the span would say nothing about the failure without
+		// this. It is registered after the one above, which means it runs while the span is still
+		// recording.
 		defer func() {
 			v := recover()
 			if v == nil {
 				return
 			}
 
-			err, ok := v.(error)
-			if !ok {
-				err = fmt.Errorf("panic: %v", v)
-			}
+			// Deferred so the value carries on unchanged whatever the rest of this function does,
+			// since anything which panicked in here would replace it otherwise
+			defer panic(v)
 
-			span.RecordError(err, trace.WithStackTrace(true))
-			span.SetStatus(codes.Error, "job panicked")
-
-			// Re-panic so the runner still handles this as the panic it is
-			panic(v)
+			glueotel.RecordPanic(span, v)
 		}()
 
 		if err := fn(ctx, m); err != nil {

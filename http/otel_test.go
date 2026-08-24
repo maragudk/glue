@@ -142,17 +142,36 @@ func TestOpenTelemetry(t *testing.T) {
 		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.HTTPRoute("/things/{id}")), "expected http.route attribute")
 	})
 
+	t.Run("names a panicking handler's span when there is no chi route context at all", func(t *testing.T) {
+		// The naming and the recording share a defer, and the naming reads a route context which is
+		// nil outside a chi router, so this is the panic path with the most to go wrong on it
+		sr := oteltest.NewSpanRecorder(t)
+
+		h := gluehttp.OpenTelemetry(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			panic("the parrot has ceased to be")
+		}))
+
+		serveExpectingPanic(t, h, httptest.NewRequest(http.MethodPost, "/anything", nil))
+
+		span := lastEndedSpan(t, sr)
+		is.Equal(t, "POST", span.Name())
+		is.Equal(t, codes.Error, span.Status().Code)
+	})
+
 	t.Run("records a panicking handler as an error on the span", func(t *testing.T) {
 		tests := []struct {
 			name            string
 			value           any
+			expectedType    string
 			expectedMessage string
 		}{
 			// The panic value is not wrapped when it is already an error, so the exception keeps the
-			// type and message the handler panicked with
-			{name: "error", value: errors.New("the parrot has ceased to be"), expectedMessage: "the parrot has ceased to be"},
-			{name: "string", value: "the parrot has ceased to be", expectedMessage: "panic: the parrot has ceased to be"},
-			{name: "anything else", value: 42, expectedMessage: "panic: 42"},
+			// type and message the handler panicked with. Wrapping would make every panic look like
+			// the wrapper's type instead.
+			{name: "error", value: errors.New("the parrot has ceased to be"), expectedType: "*errors.errorString", expectedMessage: "the parrot has ceased to be"},
+			{name: "wrapped abort", value: fmt.Errorf("giving up: %w", http.ErrAbortHandler), expectedType: "*fmt.wrapError", expectedMessage: "giving up: net/http: abort Handler"},
+			{name: "string", value: "the parrot has ceased to be", expectedType: "*errors.errorString", expectedMessage: "panic: the parrot has ceased to be"},
+			{name: "anything else", value: 42, expectedType: "*errors.errorString", expectedMessage: "panic: 42"},
 		}
 
 		for _, test := range tests {
@@ -166,13 +185,16 @@ func TestOpenTelemetry(t *testing.T) {
 				})
 
 				v := serveExpectingPanic(t, mux, httptest.NewRequest(http.MethodGet, "/things/42", nil))
-				is.Equal(t, fmt.Sprint(test.value), fmt.Sprint(v), "expected the original panic value to reach the caller")
+				is.True(t, v == test.value, "expected the original panic value to reach the caller")
 
 				span := lastEndedSpan(t, sr)
 				is.Equal(t, codes.Error, span.Status().Code)
+				is.Equal(t, "panic", span.Status().Description)
 
 				events := oteltest.ExceptionEventsWithStackTrace(span)
 				is.Equal(t, 1, len(events))
+				is.True(t, oteltest.HasAttribute(events[0].Attributes, semconv.ExceptionType(test.expectedType)),
+					"expected exception type "+test.expectedType)
 				is.True(t, oteltest.HasAttribute(events[0].Attributes, semconv.ExceptionMessage(test.expectedMessage)),
 					"expected exception message "+test.expectedMessage)
 
@@ -195,15 +217,18 @@ func TestOpenTelemetry(t *testing.T) {
 		})
 
 		v := serveExpectingPanic(t, mux, httptest.NewRequest(http.MethodGet, "/things/42", nil))
-		err, ok := v.(error)
-		is.True(t, ok, "expected the panic value to be an error")
-		is.True(t, errors.Is(err, http.ErrAbortHandler), "expected http.ErrAbortHandler to reach the caller")
+		is.True(t, v == error(http.ErrAbortHandler), "expected http.ErrAbortHandler to reach the caller")
 
 		span := lastEndedSpan(t, sr)
 		is.Equal(t, "GET /things/{id}", span.Name())
 		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.HTTPRoute("/things/{id}")), "expected http.route attribute")
 		is.Equal(t, codes.Unset, span.Status().Code)
 		is.Equal(t, 0, len(oteltest.ExceptionEventsWithStackTrace(span)))
+
+		// An abort is not invisible: the SDK adds an exception event of its own on the way through
+		// [trace.Span.End], which is what this one event is. What the middleware leaves out is the
+		// error status and an exception of its own.
+		is.Equal(t, 1, len(span.Events()))
 	})
 
 	t.Run("keeps the main span attributes when the request carries a flood of query parameters", func(t *testing.T) {
@@ -421,8 +446,8 @@ func lastEndedSpan(t *testing.T, sr interface {
 	return spans[len(spans)-1]
 }
 
-// serveExpectingPanic serves the request with the given handler and returns the value it panicked with,
-// failing the test if it did not panic.
+// serveExpectingPanic with the given handler, returning the value it panicked with and failing the test
+// if it did not panic.
 func serveExpectingPanic(t *testing.T, h http.Handler, req *http.Request) (v any) {
 	t.Helper()
 

@@ -85,7 +85,10 @@ func TestExceptionEventsWithStackTrace(t *testing.T) {
 		_, span := otel.Tracer("test").Start(t.Context(), "test-span")
 		span.RecordError(errors.New("the parrot has ceased to be"), trace.WithStackTrace(true))
 		span.RecordError(errors.New("it is an ex-parrot"))
-		span.AddEvent("something else entirely")
+
+		// An event which carries a stack trace without being an exception, so the name is the only
+		// thing which can rule it out
+		span.AddEvent("something else entirely", trace.WithAttributes(semconv.ExceptionStacktrace("goroutine 1 [running]:")))
 		span.End()
 
 		spans := sr.Ended()

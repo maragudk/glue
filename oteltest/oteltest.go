@@ -52,10 +52,13 @@ func HasAttributeKey(attrs []attribute.KeyValue, key attribute.Key) bool {
 	return false
 }
 
-// ExceptionEventsWithStackTrace recorded on the span, which is what instrumentation recording an error
-// with [go.opentelemetry.io/otel/trace.WithStackTrace] leaves behind. The SDK records an exception event of its own when a panic
-// unwinds through a span's End, and without a stack trace unless End was asked for one, so the stack
-// trace is what tells a deliberate recording apart from that one.
+// ExceptionEventsWithStackTrace recorded on the span, which is what an error recorded with
+// [go.opentelemetry.io/otel/trace.WithStackTrace] leaves behind. A span the SDK ended while a panic was
+// unwinding through it carries an exception event of that SDK's own making, without a stack trace, and
+// the stack trace is what separates the two.
+//
+// The result is therefore not every exception on the span: an error recorded without a stack trace is
+// invisible here, so this cannot show that a span carries no exception at all.
 func ExceptionEventsWithStackTrace(span sdktrace.ReadOnlySpan) []sdktrace.Event {
 	var events []sdktrace.Event
 	for _, event := range span.Events() {

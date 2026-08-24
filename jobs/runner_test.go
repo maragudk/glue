@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel"
@@ -241,13 +241,15 @@ func TestWithTracing(t *testing.T) {
 		tests := []struct {
 			name            string
 			value           any
+			expectedType    string
 			expectedMessage string
 		}{
 			// The panic value is not wrapped when it is already an error, so the exception keeps the
-			// type and message the job panicked with
-			{name: "error", value: errors.New("the parrot has ceased to be"), expectedMessage: "the parrot has ceased to be"},
-			{name: "string", value: "the parrot has ceased to be", expectedMessage: "panic: the parrot has ceased to be"},
-			{name: "anything else", value: 42, expectedMessage: "panic: 42"},
+			// type and message the job panicked with. Wrapping would make every panic look like the
+			// wrapper's type instead.
+			{name: "error", value: errors.New("the parrot has ceased to be"), expectedType: "*errors.errorString", expectedMessage: "the parrot has ceased to be"},
+			{name: "string", value: "the parrot has ceased to be", expectedType: "*errors.errorString", expectedMessage: "panic: the parrot has ceased to be"},
+			{name: "anything else", value: 42, expectedType: "*errors.errorString", expectedMessage: "panic: 42"},
 		}
 
 		for _, test := range tests {
@@ -259,23 +261,32 @@ func TestWithTracing(t *testing.T) {
 				})
 
 				v := runExpectingPanic(t, handler, []byte(`{"parrot":"deceased"}`))
-				is.Equal(t, fmt.Sprint(test.value), fmt.Sprint(v), "expected the original panic value to reach the caller")
+				is.True(t, v == test.value, "expected the original panic value to reach the caller")
 
 				spans := sr.Ended()
 				is.Equal(t, 1, len(spans))
 				is.Equal(t, codes.Error, spans[0].Status().Code)
+				is.Equal(t, "panic", spans[0].Status().Description)
 
 				events := oteltest.ExceptionEventsWithStackTrace(spans[0])
 				is.Equal(t, 1, len(events))
+				is.True(t, oteltest.HasAttribute(events[0].Attributes, semconv.ExceptionType(test.expectedType)),
+					"expected exception type "+test.expectedType)
 				is.True(t, oteltest.HasAttribute(events[0].Attributes, semconv.ExceptionMessage(test.expectedMessage)),
 					"expected exception message "+test.expectedMessage)
+
+				// The stack has to be the one which panicked, not the one which recorded it, so the
+				// panicking job in this file must appear in it
+				stacktrace, ok := attributeValue(events[0].Attributes, semconv.ExceptionStacktraceKey)
+				is.True(t, ok, "expected exception stacktrace attribute")
+				is.True(t, strings.Contains(stacktrace.AsString(), "runner_test.go"), "expected the panic site in the stacktrace")
 			})
 		}
 	})
 }
 
-// runExpectingPanic runs the job with the given payload and returns the value it panicked with, failing
-// the test if it did not panic.
+// runExpectingPanic with the given payload, returning the value the job panicked with and failing the
+// test if it did not panic.
 func runExpectingPanic(t *testing.T, fn jobs.Func, m []byte) (v any) {
 	t.Helper()
 
@@ -288,4 +299,14 @@ func runExpectingPanic(t *testing.T, fn jobs.Func, m []byte) (v any) {
 	_ = fn(t.Context(), m)
 
 	return nil
+}
+
+// attributeValue for the given key in the slice, also reporting whether it was there at all.
+func attributeValue(attrs []attribute.KeyValue, key attribute.Key) (attribute.Value, bool) {
+	for _, attr := range attrs {
+		if attr.Key == key {
+			return attr.Value, true
+		}
+	}
+	return attribute.Value{}, false
 }
