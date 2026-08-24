@@ -107,7 +107,9 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 				return
 			}
 
-			setUserIDOnSpan(ctx, userID)
+			if span := trace.SpanFromContext(ctx); span.IsRecording() {
+				span.SetAttributes(semconv.EnduserPseudoID(string(userID)))
+			}
 
 			// Store the user directly in the request context instead of having to use the session manager
 			stop = time.Now()
@@ -222,17 +224,6 @@ func SavePermissionsInContext(log *slog.Logger, pg permissionsGetter) Middleware
 			next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, contextPermissionsKey, permissions)))
 		})
 	}
-}
-
-// setUserIDOnSpan as the enduser.pseudo.id attribute on the current span in the context, if it is
-// recording. See [setSpanDuration] for which span that is.
-func setUserIDOnSpan(ctx context.Context, userID model.UserID) {
-	span := trace.SpanFromContext(ctx)
-	if !span.IsRecording() {
-		return
-	}
-
-	span.SetAttributes(semconv.EnduserPseudoID(string(userID)))
 }
 
 // setPermissionsOnSpan as the enduser.permissions attribute on the current span in the context, if it is
