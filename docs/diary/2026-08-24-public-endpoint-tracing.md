@@ -120,3 +120,57 @@ The preamble and Step 1 above name `otelhttp.WithPublicEndpoint()`, which does n
 Decide whether client-supplied baggage should be stripped in the middleware, which is the remaining channel through which a client influences our telemetry.
 
 A test helper which sets the global propagator with honest cleanup could live in `/oteltest` — `/jobs/runner_test.go` sets one globally and never cleans up at all. Not done here to keep the public surface of `oteltest` unchanged for a fix about HTTP tracing.
+
+## Step 3: Discarding the client's baggage too
+
+**Author:** public-endpoint
+
+### Prompt Context
+
+**Verbatim prompt:** "Markus agreed with your baggage follow-up and wants it in this same PR (198), not a separate issue. Same rationale as the trace parent: caller-controlled propagation state we don't trust. Requirements: 1. In the `OpenTelemetry` middleware in `http/otel.go`, strip incoming baggage from the request context before the app handler runs, so client-sent `baggage` headers never reach handlers, outbound calls, or job envelopes. Use `baggage.ContextWithoutBaggage` (go.opentelemetry.io/otel/baggage) on the request context inside the wrapped handler — note otelhttp extracts baggage before invoking the inner handler, so clear it there. 2. Baggage the app sets itself (after the middleware) must keep working — don't touch propagator setup or the jobs runner. 3. Mirror the parenting decision: unconditional for remote... actually keep it simpler than the trace-parent predicate — strip extracted baggage regardless, since unlike a severed parent span there's no in-process signal being lost: an in-process caller invoking ServeHTTP retains its baggage in its own context; only the header-derived baggage in the request context is cleared. If you find a case where that reasoning breaks (e.g. in-process ServeHTTP where the outer context carries app-set baggage that would be wrongly cleared), match the `IsRemote()` predicate approach instead and say so in your report. [...]"
+
+**Interpretation:** Extend the same distrust to baggage: what the request carried must not reach handlers or anything downstream, while the process's own baggage keeps working.
+
+**Inferred intent:** Close the remaining channel through which a client writes state into this service's telemetry and job payloads.
+
+### What I did
+
+Checked the premise in requirement 3 first, and it does not hold. `propagation.Baggage.Extract` (read in the module cache) builds baggage from the headers alone and calls `baggage.ContextWithBaggage`, so extraction *replaces* the context's baggage rather than adding to it, and returns the parent untouched when there is no valid header. An in-process caller therefore does not retain its baggage "in its own context" as far as the handler is concerned: a plain `baggage.ContextWithoutBaggage` inside the wrapped handler would throw its baggage away whenever the request carried no header. The requirements anticipated this and told me to say so, which this is.
+
+The first implementation captured the baggage the context held before extraction, under a private context key set by a wrapper around the `otelhttp` handler, and restored it inside. It worked, and self-review found a better shape: `otelhttp.WithPropagators` lets the middleware supply the propagator `otelhttp` extracts with, and inside `Extract` the "before" and "after" are two lines apart. `/http/otel.go` now has a `keepOwnBaggage` propagator which delegates to the global one and puts the previous baggage back, with `otelhttp.WithPropagators(keepOwnBaggage{})` in the option list. No context key, no wrapper handler, no request replacement.
+
+Tests in `/http/otel_test.go` cover the request's baggage being discarded, the process's own surviving (no header, a header, a malformed header), the discard holding under a second copy of the middleware, and a handler adding to the context's baggage and injecting it, where the carrier must come out as exactly `job.id=123`. `usePropagators` now installs trace context and baggage together. `/docs/decisions.md` describes the shipped design.
+
+### Why
+
+The requirement named a mechanism, and the mechanism turned out to rest on an assumption about a dependency which the dependency does not make. Checking it first was the difference between shipping the requirement and shipping the intent.
+
+### What worked
+
+Deleting the fix and rerunning is what made every claim checkable. With the restore removed entirely, `Expected "0", but got "2"`; with the plain unconditional `baggage.ContextWithoutBaggage` the requirements described, `Expected "tenant=acme", but got ""` in both rows of the in-process table — the failure the requirement asked me to look for, reproduced rather than argued. With `otelhttp.WithPropagators(keepOwnBaggage{})` removed at the end, all four baggage tests failed, including `Expected "job.id=123", but got "user.id=evil,job.id=123"`.
+
+Benchmarking settled the shape question: 44 allocs/op with the propagator, against 48 for the capture-and-restore version, which paid two `http.Request` copies and two context values on every request whether or not any baggage existed.
+
+### What didn't work
+
+Nothing failed outright, but the first design was worse in three ways at once, and only review surfaced them together: the extra allocations, the private context key riding the whole request context, and a request replacement inside the middleware which stopped `http.Request.Pattern` from reaching `otelhttp`'s second span-name formatter run — the very thing the comment at `/http/otel.go:147` warns about. The propagator version has none of them.
+
+### What I learned
+
+`otelhttp` extracts before it starts the span, so undoing the baggage in the propagator rather than in the handler also keeps it away from samplers and span processors. The handler-side version could not have done that.
+
+The W3C limits mean baggage is not "unbounded" — `propagation.Baggage` caps it at 64 members and 8192 bytes — so the argument for discarding it is that it is client-controlled, not that it is unlimited. Both words appeared in an earlier draft of the doc comment; only one survives checking.
+
+### What was tricky
+
+The guarantee is narrower than "the client's baggage never reaches a handler", and saying so precisely took some care. What the middleware tells apart is *when* baggage entered the context, so tracing above it which extracts baggage itself hands that baggage to the middleware as though it were the process's own. Closing that would mean subtracting the request's own members from the context's, which needs the header knowledge this design avoids. Documented on `OpenTelemetry` and in `/docs/decisions.md` rather than half-fixed.
+
+### What warrants review
+
+`keepOwnBaggage` in `/http/otel.go` is where the behaviour lives; the doc comment on `OpenTelemetry` states the boundary above. Worth deciding whether the boundary is acceptable or whether the subtraction is wanted after all.
+
+`Inject` and `Fields` delegate to the global propagator unchanged, so outbound injection and the job queue's enqueue-time context are unaffected, and `/jobs/runner.go` is untouched.
+
+### Future work
+
+If baggage from an upstream extractor ever matters, the subtraction described above is the way to close it.

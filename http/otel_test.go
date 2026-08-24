@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
@@ -328,7 +329,7 @@ func TestOpenTelemetry(t *testing.T) {
 		for _, test := range tests {
 			t.Run(test.name, func(t *testing.T) {
 				sr := oteltest.NewSpanRecorder(t)
-				useTraceContextPropagator(t)
+				usePropagators(t)
 
 				traceID, err := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
 				is.NotError(t, err)
@@ -375,7 +376,7 @@ func TestOpenTelemetry(t *testing.T) {
 		for _, test := range tests {
 			t.Run(test.name, func(t *testing.T) {
 				sr := oteltest.NewSpanRecorder(t)
-				useTraceContextPropagator(t)
+				usePropagators(t)
 
 				mux := chi.NewMux()
 				mux.Use(gluehttp.OpenTelemetry)
@@ -400,7 +401,7 @@ func TestOpenTelemetry(t *testing.T) {
 	// lost silently, since only a remote span context is linked.
 	t.Run("keeps a parent span from the same process", func(t *testing.T) {
 		sr := oteltest.NewSpanRecorder(t)
-		useTraceContextPropagator(t)
+		usePropagators(t)
 
 		mux := chi.NewMux()
 		mux.Use(gluehttp.OpenTelemetry)
@@ -414,6 +415,129 @@ func TestOpenTelemetry(t *testing.T) {
 		is.Equal(t, parent.SpanContext().SpanID(), span.Parent().SpanID())
 		is.Equal(t, parent.SpanContext().TraceID(), span.SpanContext().TraceID())
 		is.Equal(t, 0, len(span.Links()))
+	})
+
+	// Baggage rides along on the context into everything below and out again through anything the
+	// propagator is injected into, so what a client puts there would reach places it has no business
+	// reaching.
+	t.Run("discards the baggage the request carried", func(t *testing.T) {
+		oteltest.NewSpanRecorder(t)
+		usePropagators(t)
+
+		var served bool
+		var handlerBaggage baggage.Baggage
+		mux := chi.NewMux()
+		mux.Use(gluehttp.OpenTelemetry)
+		mux.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {
+			served = true
+			handlerBaggage = baggage.FromContext(r.Context())
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/things/42", nil)
+		req.Header.Set("baggage", "user.id=evil,tenant=acme")
+		mux.ServeHTTP(httptest.NewRecorder(), req)
+
+		is.True(t, served, "expected the handler to have run")
+		is.Equal(t, 0, handlerBaggage.Len())
+	})
+
+	// What the request brought is discarded, baggage which is this process's own is not, and once the
+	// propagator has extracted there is nothing in the context to tell them apart by. A request carrying
+	// baggage is where a client's would survive, and one carrying none is where ours would be lost.
+	t.Run("keeps baggage set in this process", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			baggage string
+		}{
+			{name: "request carrying no baggage"},
+			{name: "request carrying baggage of its own", baggage: "user.id=evil"},
+			{name: "request carrying a malformed baggage header", baggage: "not a baggage header"},
+		}
+
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				oteltest.NewSpanRecorder(t)
+				usePropagators(t)
+
+				var served bool
+				var handlerBaggage baggage.Baggage
+				mux := chi.NewMux()
+				mux.Use(gluehttp.OpenTelemetry)
+				mux.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {
+					served = true
+					handlerBaggage = baggage.FromContext(r.Context())
+				})
+
+				member, err := baggage.NewMember("tenant", "acme")
+				is.NotError(t, err)
+				ourBaggage, err := baggage.New(member)
+				is.NotError(t, err)
+
+				req := httptest.NewRequest(http.MethodGet, "/things/42", nil).
+					WithContext(baggage.ContextWithBaggage(t.Context(), ourBaggage))
+				if test.baggage != "" {
+					req.Header.Set("baggage", test.baggage)
+				}
+				mux.ServeHTTP(httptest.NewRecorder(), req)
+
+				is.True(t, served, "expected the handler to have run")
+				is.Equal(t, "tenant=acme", handlerBaggage.String())
+			})
+		}
+	})
+
+	// The middleware is applied twice where a traced router is mounted in another, and the request's
+	// baggage is discarded again by the inner one rather than mistaken for this process's own.
+	t.Run("discards the baggage the request carried under another copy of the middleware", func(t *testing.T) {
+		oteltest.NewSpanRecorder(t)
+		usePropagators(t)
+
+		var served bool
+		var handlerBaggage baggage.Baggage
+		inner := chi.NewMux()
+		inner.Use(gluehttp.OpenTelemetry)
+		inner.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {
+			served = true
+			handlerBaggage = baggage.FromContext(r.Context())
+		})
+
+		outer := chi.NewMux()
+		outer.Use(gluehttp.OpenTelemetry)
+		outer.Mount("/api", inner)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/things/42", nil)
+		req.Header.Set("baggage", "user.id=evil")
+		outer.ServeHTTP(httptest.NewRecorder(), req)
+
+		is.True(t, served, "expected the handler to have run")
+		is.Equal(t, 0, handlerBaggage.Len())
+	})
+
+	// Baggage is only worth keeping if it still travels, and only worth discarding if the client's does not
+	t.Run("lets a handler add baggage which propagates onwards without the client's", func(t *testing.T) {
+		oteltest.NewSpanRecorder(t)
+		usePropagators(t)
+
+		carrier := propagation.MapCarrier{}
+		mux := chi.NewMux()
+		mux.Use(gluehttp.OpenTelemetry)
+		mux.Get("/things/{id}", func(w http.ResponseWriter, r *http.Request) {
+			member, err := baggage.NewMember("job.id", "123")
+			is.NotError(t, err)
+			// Added to what the middleware left in the context, rather than replacing it, so the client's
+			// baggage would come along if any had survived
+			b, err := baggage.FromContext(r.Context()).SetMember(member)
+			is.NotError(t, err)
+
+			// What an outbound request or a job enqueued from the handler carries with it
+			otel.GetTextMapPropagator().Inject(baggage.ContextWithBaggage(r.Context(), b), carrier)
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/things/42", nil)
+		req.Header.Set("baggage", "user.id=evil")
+		mux.ServeHTTP(httptest.NewRecorder(), req)
+
+		is.Equal(t, "job.id=123", carrier.Get("baggage"))
 	})
 
 	// This is what lets everything below write telemetry without being handed a span: whatever the context
@@ -439,17 +563,17 @@ func TestOpenTelemetry(t *testing.T) {
 	})
 }
 
-// useTraceContextPropagator globally for the duration of the test, leaving a propagator which extracts
-// nothing behind afterwards. The middleware reads trace context off the request through the global
-// [propagation.TextMapPropagator], which extracts nothing by default, so a traceparent header goes
-// unnoticed without this. That default cannot be restored: setting a propagator wires the global delegator
-// to it for good, and handing the delegator back to [otel.SetTextMapPropagator] leaves it delegating to
-// this one, so an empty composite stands in for it. Like [oteltest.NewSpanRecorder] this mutates global
-// state, so it is not safe for parallel tests.
-func useTraceContextPropagator(t *testing.T) {
+// usePropagators globally for the duration of the test, leaving a propagator which extracts nothing behind
+// afterwards. The middleware's behaviour depends on both trace context and baggage, and it reads them off
+// the request through the global [propagation.TextMapPropagator], which extracts nothing by default, so
+// traceparent and baggage headers go unnoticed without this. That default cannot be
+// restored: setting a propagator wires the global delegator to it for good, and handing the delegator back
+// to [otel.SetTextMapPropagator] leaves it delegating to this one, so an empty composite stands in for it.
+// Like [oteltest.NewSpanRecorder] this mutates global state, so it is not safe for parallel tests.
+func usePropagators(t *testing.T) {
 	t.Helper()
 
-	otel.SetTextMapPropagator(propagation.TraceContext{})
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 
 	t.Cleanup(func() {
 		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())

@@ -11,13 +11,44 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/mileusna/useragent"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
 	glueotel "maragu.dev/glue/otel"
 )
+
+// keepOwnBaggage propagates as the global [propagation.TextMapPropagator] does, except that extracting
+// leaves the context's baggage as it found it, so only baggage this process set survives. Everything else
+// the request carried is extracted as usual. Undoing it here rather than below means the baggage is gone
+// before the server span starts, so nothing sampling or processing that span sees it either.
+type keepOwnBaggage struct{}
+
+func (keepOwnBaggage) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
+	own := baggage.FromContext(ctx)
+
+	ctx = otel.GetTextMapPropagator().Extract(ctx, carrier)
+
+	// Neither side has any, so the context is already what it should be, and a request without baggage
+	// is the common one
+	if own.Len() == 0 && baggage.FromContext(ctx).Len() == 0 {
+		return ctx
+	}
+
+	return baggage.ContextWithBaggage(ctx, own)
+}
+
+func (keepOwnBaggage) Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+}
+
+func (keepOwnBaggage) Fields() []string {
+	return otel.GetTextMapPropagator().Fields()
+}
 
 // OpenTelemetry middleware which starts the main server span for a request and describes it with the
 // request, the route, and the client.
@@ -28,6 +59,12 @@ import (
 // from it would let it decide how this service's traces are grouped and sampled; the link keeps the
 // correlation without handing that over. A parent already in the request context, from tracing above this
 // middleware in the same process, is a parent as usual.
+//
+// Baggage the request carried is discarded for the same reason, rather than travelling on the context into
+// handlers and out again through anything this process injects the propagator into. It is client-controlled
+// state, and nothing below has a way to tell it from its own. Baggage this process set before the request
+// reached the middleware, or sets while handling it, is untouched. The two are told apart by when they
+// entered the context, so tracing above this middleware which extracts baggage itself defeats the discard.
 func OpenTelemetry(next http.Handler) http.Handler {
 	return otelhttp.NewHandler(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -134,6 +171,7 @@ func OpenTelemetry(next http.Handler) http.Handler {
 		otelhttp.WithPublicEndpointFn(func(r *http.Request) bool {
 			return trace.SpanContextFromContext(r.Context()).IsRemote()
 		}),
+		otelhttp.WithPropagators(keepOwnBaggage{}),
 	)
 }
 
