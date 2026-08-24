@@ -232,10 +232,8 @@ func (t *TracingMux) wrapHandler(h http.Handler) http.Handler {
 
 // wrapHandlerFunc to time the handler and record it on the main span as handler.duration_ms.
 //
-// The measurement starts when the handler is entered and stops when it returns, so it covers the handler
-// and anything it calls, and nothing else: middleware runs outside it and is not included, which is why
-// this does not account for the whole span. Subtracting it from duration_ms gives everything else the
-// request did, not any one thing.
+// The measurement runs from when the registered handler is entered until it returns,
+// so whatever was composed into that handler — including any hand-wrapped middleware — is included.
 //
 // It records in a defer, so a panicking handler is still measured. There is no check for whether tracing
 // is configured, because there is nothing to check at registration time: with no root span on the request

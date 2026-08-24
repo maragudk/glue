@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -598,37 +599,40 @@ func TestMiddlewareTimings(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name+" should record its own duration on the root span", func(t *testing.T) {
-			sr := oteltest.NewSpanRecorder(t)
+			// Everything runs inside the bubble, where the clock is fake and only advances when something
+			// sleeps. The middleware itself never sleeps, so its own work measures exactly zero, and the
+			// handler's sleep is the tripwire: had it been counted, the measurement would be exactly 20.
+			synctest.Test(t, func(t *testing.T) {
+				sr := oteltest.NewSpanRecorder(t)
 
-			ctx, rootSpan := otel.Tracer("test").Start(t.Context(), "root")
-			ctx = context.WithValue(ctx, gluehttp.ContextKey("rootSpan"), rootSpan)
-			if test.withUser {
-				userID := model.UserID("u_123")
-				ctx = context.WithValue(ctx, gluehttp.ContextKey("userID"), &userID)
-			}
-
-			var called bool
-			h := test.middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				called = true
-				time.Sleep(20 * time.Millisecond)
-			}))
-			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
-			rootSpan.End()
-
-			is.True(t, called)
-
-			attrs := endedSpanNamed(t, sr, "root").Attributes()
-			is.True(t, oteltest.HasAttributeKey(attrs, test.key), "expected "+string(test.key))
-
-			for _, attr := range attrs {
-				if attr.Key != test.key {
-					continue
+				ctx, rootSpan := otel.Tracer("test").Start(t.Context(), "root")
+				ctx = context.WithValue(ctx, gluehttp.ContextKey("rootSpan"), rootSpan)
+				if test.withUser {
+					userID := model.UserID("u_123")
+					ctx = context.WithValue(ctx, gluehttp.ContextKey("userID"), &userID)
 				}
-				is.Equal(t, attribute.FLOAT64, attr.Value.Type())
-				is.True(t, attr.Value.AsFloat64() >= 0, "duration should not be negative")
-				// The handler slept 20ms, so anything near that means the handler got counted too
-				is.True(t, attr.Value.AsFloat64() < 10, "expected the middleware's own work, not the handler below it")
-			}
+
+				var called bool
+				h := test.middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					called = true
+					time.Sleep(20 * time.Millisecond)
+				}))
+				h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
+				rootSpan.End()
+
+				is.True(t, called)
+
+				attrs := endedSpanNamed(t, sr, "root").Attributes()
+				is.True(t, oteltest.HasAttributeKey(attrs, test.key), "expected "+string(test.key))
+
+				for _, attr := range attrs {
+					if attr.Key != test.key {
+						continue
+					}
+					is.Equal(t, attribute.FLOAT64, attr.Value.Type())
+					is.Equal(t, float64(0), attr.Value.AsFloat64())
+				}
+			})
 		})
 
 		t.Run(test.name+" should not start a span of its own", func(t *testing.T) {

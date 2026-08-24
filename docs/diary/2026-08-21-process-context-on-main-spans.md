@@ -1019,3 +1019,101 @@ This is written into the doc comments rather than left to be inferred.
 ### Future work
 
 Nothing new.
+
+## Step 9: Second review round on the timing attributes
+
+**Author:** builder (sub-agent)
+
+### Prompt Context
+
+**Verbatim prompt:** five review comments, three of which need changes, applied as one batch. Replace
+the `done()` call sites in all three auth middlewares with a stop-time defer, Markus's design: one
+`defer` which stamps `time.Now()` when `stop` is still zero, and an explicit `stop = time.Now()`
+before each handoff. Convert the sleeping duration tests to `testing/synctest`, where the fake clock
+makes the middleware's own work measure exactly zero and a wrongly-included handler exactly 20.
+Replace the middle paragraph of `wrapHandlerFunc`'s doc comment, which over-claims that middleware is
+never included. Two comments resulted in no change.
+**Interpretation:** one write per request instead of seven call sites, exact assertions instead of
+loose bounds, and a comment that stops promising something the code cannot guarantee.
+**Inferred intent:** remove three ways the timing code could silently drift wrong.
+
+### What I did
+
+All three middlewares now open with the same shape and have no `done()` anywhere:
+
+    start := time.Now()
+    var stop time.Time
+    defer func() {
+        if stop.IsZero() {
+            stop = time.Now()
+        }
+        setRootSpanDuration(ctx, "authn.duration_ms", stop.Sub(start))
+    }()
+
+`stop = time.Now()` goes immediately before each handoff: four in `Authenticate`, one in `Authorize`,
+two in `SavePermissionsInContext`. Every other path leaves it unset, and the defer stamps its own
+firing time, which for a path that never hands off is exactly where the work ended.
+`RedirectIfAuthenticated` also calls `next.ServeHTTP` and is not one of the three, so it was left
+alone.
+
+The doc comment paragraph is replaced verbatim with the agreed sentence, and the two comments that
+resulted in no change were left as they are.
+
+### Why
+
+The old shape had seven `done()` calls in `Authenticate` alone, each one a place where a future edit
+could add a return path and forget the call, losing the attribute silently for that path only. The
+defer inverts the default: every path is measured, and the explicit `stop` marks the ones that must
+not include what comes after. Forgetting a `stop` now over-measures visibly rather than dropping the
+attribute invisibly, which is the better failure.
+
+### What worked
+
+`testing/synctest` played entirely nicely with the span recorder, which was the open question. The
+whole subtest -- recorder, span, request, serve, assertions -- runs inside the bubble, and
+`oteltest.NewSpanRecorder`'s `t.Cleanup` registered on the bubbled `T` behaves normally. Nothing had
+to be forced. The recorder is a synchronous span processor with no goroutines or timers of its own,
+which is presumably why there was nothing to trip over.
+
+The payoff is larger than tightening a bound. The old assertion was "under 10, because the handler
+slept 20" -- a real-clock heuristic with slack on both sides. In fake time the middleware never
+sleeps, so its own work is exactly zero, and I could assert equality. The control run proves the
+assertion bites: removing the `stop = time.Now()` before one handoff gives
+
+    auth_test.go:633: Expected "0", but got "20" (type float64)
+
+Exactly 20, because the handler's sleep is the only thing that moved the clock. A real clock could
+never produce that: it would give 20-point-something against a threshold, and the test would be
+measuring the machine as much as the code. The three subtests also stopped costing 20ms each.
+
+### What didn't work
+
+Nothing failed. The three changes were mechanical once the shape was agreed.
+
+### What I learned
+
+The over-claiming comment was worth fixing for a reason beyond accuracy. It said middleware "runs
+outside it and is not included", which holds for middleware registered with `Use` but not for
+middleware hand-composed into the registered handler -- `Handle("/x", mw(h))` times `mw` in full. The
+replacement says what the measurement actually spans, in terms of the handler as registered rather
+than in terms of what a reader might assume middleware means. The distinction only exists because
+`TracingMux` wraps at registration and chi applies `Use` middleware outside that, which is not
+obvious from the call site.
+
+### What was tricky
+
+Only one detail, and it is the reason the defer works at all: `stop` is captured by the closure, not
+copied, so assigning it anywhere in the body is visible to the defer when it fires. Reading it as
+"the defer sees whatever the last assignment left" is right, and it is also why a second assignment
+on a later path would quietly win. There is exactly one assignment reachable per request in each
+middleware, since every one is immediately followed by the handoff and a return.
+
+### What warrants review
+
+That each middleware's `stop` assignments are all immediately before a handoff and none is reachable
+twice. That is what makes one write per request true, and it is a property of the control flow rather
+than something the type system enforces.
+
+### Future work
+
+Nothing new.

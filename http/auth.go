@@ -49,16 +49,21 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
 
-			// Timed up to the point this hands off or gives up, so it covers this middleware's own work
-			// and never the handlers below it
+			// The clock stops where this hands off, so the measurement covers this middleware's own
+			// work and never the handlers below it. Paths which never hand off leave it unset, and the
+			// defer stamps the moment it fires, which for those is where the work ended.
 			start := time.Now()
-			done := func() {
-				setRootSpanDuration(ctx, "authn.duration_ms", time.Since(start))
-			}
+			var stop time.Time
+			defer func() {
+				if stop.IsZero() {
+					stop = time.Now()
+				}
+				setRootSpanDuration(ctx, "authn.duration_ms", stop.Sub(start))
+			}()
 
 			// If there is no session, do nothing and call the next handler
 			if !sgd.Exists(ctx, SessionUserIDKey) {
-				done()
+				stop = time.Now()
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -70,20 +75,18 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 				if errors.Is(err, model.ErrorUserNotFound) {
 					if err := sgd.Destroy(ctx); err != nil {
 						log.InfoContext(ctx, "Error destroying session for nonexistent user", "error", err, "userID", userID)
-						done()
 						recordErrorOnRootSpan(ctx, err, "error destroying session after authentication")
 						http.Error(w, "error destroying session after authentication", http.StatusInternalServerError)
 						return
 					}
 
 					// The invalid session is destroyed, and the request can continue
-					done()
+					stop = time.Now()
 					next.ServeHTTP(w, r)
 					return
 				}
 
 				log.InfoContext(ctx, "Error getting user after authentication", "error", err, "userID", userID)
-				done()
 				recordErrorOnRootSpan(ctx, err, "error getting user after authentication")
 				http.Error(w, "error getting user after authentication", http.StatusInternalServerError)
 				return
@@ -93,13 +96,12 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 			if !active {
 				if err := sgd.Destroy(ctx); err != nil {
 					log.InfoContext(ctx, "Error destroying session for inactive user", "error", err, "userID", userID)
-					done()
 					recordErrorOnRootSpan(ctx, err, "error destroying session after authentication")
 					http.Error(w, "error destroying session after authentication", http.StatusInternalServerError)
 					return
 				}
 
-				done()
+				stop = time.Now()
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -109,9 +111,8 @@ func Authenticate(log *slog.Logger, sgd sessionGetterDestroyer, uac userActiveCh
 				rootSpan.SetAttributes(semconv.EnduserPseudoID(string(userID)))
 			}
 
-			done()
-
 			// Store the user directly in the request context instead of having to use the session manager
+			stop = time.Now()
 			next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, contextUserIDKey, &userID)))
 		})
 	}
@@ -132,17 +133,21 @@ func Authorize(log *slog.Logger, pg permissionsGetter, requiredPermissions ...mo
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
 
-			// Timed up to the point this hands off or gives up, so it covers this middleware's own work
-			// and never the handlers below it
+			// The clock stops where this hands off, so the measurement covers this middleware's own
+			// work and never the handlers below it. Paths which never hand off leave it unset, and the
+			// defer stamps the moment it fires, which for those is where the work ended.
 			start := time.Now()
-			done := func() {
-				setRootSpanDuration(ctx, "authz.duration_ms", time.Since(start))
-			}
+			var stop time.Time
+			defer func() {
+				if stop.IsZero() {
+					stop = time.Now()
+				}
+				setRootSpanDuration(ctx, "authz.duration_ms", stop.Sub(start))
+			}()
 
 			userID := GetUserIDFromContext(ctx)
 
 			if userID == nil {
-				done()
 				http.Redirect(w, r, "/login?redirect="+url.QueryEscape(r.URL.Path), http.StatusTemporaryRedirect)
 				return
 			}
@@ -150,7 +155,6 @@ func Authorize(log *slog.Logger, pg permissionsGetter, requiredPermissions ...mo
 			permissions, err := pg.GetPermissions(ctx, *userID)
 			if err != nil {
 				log.InfoContext(ctx, "Error getting permissions", "error", err, "userID", userID)
-				done()
 				recordErrorOnRootSpan(ctx, err, "error getting permissions")
 				http.Error(w, "error getting permissions", http.StatusInternalServerError)
 				return
@@ -167,12 +171,11 @@ func Authorize(log *slog.Logger, pg permissionsGetter, requiredPermissions ...mo
 			}
 
 			if !hasRequiredPermissions {
-				done()
 				http.Error(w, "unauthorized", http.StatusForbidden)
 				return
 			}
 
-			done()
+			stop = time.Now()
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -187,17 +190,22 @@ func SavePermissionsInContext(log *slog.Logger, pg permissionsGetter) Middleware
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
 
-			// Timed up to the point this hands off or gives up, so it covers this middleware's own work
-			// and never the handlers below it
+			// The clock stops where this hands off, so the measurement covers this middleware's own
+			// work and never the handlers below it. Paths which never hand off leave it unset, and the
+			// defer stamps the moment it fires, which for those is where the work ended.
 			start := time.Now()
-			done := func() {
-				setRootSpanDuration(ctx, "permissions.duration_ms", time.Since(start))
-			}
+			var stop time.Time
+			defer func() {
+				if stop.IsZero() {
+					stop = time.Now()
+				}
+				setRootSpanDuration(ctx, "permissions.duration_ms", stop.Sub(start))
+			}()
 
 			userID := GetUserIDFromContext(ctx)
 
 			if userID == nil {
-				done()
+				stop = time.Now()
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -205,7 +213,6 @@ func SavePermissionsInContext(log *slog.Logger, pg permissionsGetter) Middleware
 			permissions, err := pg.GetPermissions(ctx, *userID)
 			if err != nil {
 				log.ErrorContext(ctx, "Error getting permissions", "error", err, "userID", userID)
-				done()
 				recordErrorOnRootSpan(ctx, err, "error getting permissions")
 				http.Error(w, "error getting permissions", http.StatusInternalServerError)
 				return
@@ -213,7 +220,7 @@ func SavePermissionsInContext(log *slog.Logger, pg permissionsGetter) Middleware
 
 			setPermissionsOnRootSpan(ctx, permissions)
 
-			done()
+			stop = time.Now()
 			next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, contextPermissionsKey, permissions)))
 		})
 	}
