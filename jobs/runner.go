@@ -123,6 +123,22 @@ func WithTracing(operationName string, fn Func) Func {
 		)
 		defer span.End()
 
+		// A panicking job returns no error, so the span would say nothing about the failure without
+		// this. It is registered after the one above, which means it runs while the span is still
+		// recording.
+		defer func() {
+			v := recover()
+			if v == nil {
+				return
+			}
+
+			// Deferred so the value carries on unchanged whatever the rest of this function does,
+			// since anything which panicked in here would replace it otherwise
+			defer panic(v)
+
+			glueotel.RecordPanic(span, v)
+		}()
+
 		if err := fn(ctx, m); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "job failed")

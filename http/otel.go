@@ -132,24 +132,46 @@ func OpenTelemetry(next http.Handler) http.Handler {
 				span.SetAttributes(semconv.DeviceModelName(ua.Device))
 			}
 
+			// Everything which needs the request handled first runs in a defer, because a defer is the
+			// only thing which runs whether the handler returns or panics, and a span describing a
+			// panicking request only has value if it can be attributed to a route.
+			defer func() {
+				v := recover()
+				if v != nil {
+					// Deferred so the value carries on unchanged whatever the rest of this function
+					// does, since anything which panicked in here would replace it otherwise
+					defer panic(v)
+				}
+
+				// Record whether the client disconnected before we responded. The status code is handled
+				// at the router (see [adaptPage]); here we just keep the signal queryable on the span.
+				if contextCanceled(r.Context().Err()) {
+					span.SetAttributes(attribute.Bool("http.client_disconnected", true))
+				}
+
+				// The route is only known now that the router below has matched, and the formatter below cannot
+				// be relied on to pick it up: its second run happens only when [http.Request.Pattern] reaches
+				// back up here, which any middleware in between replacing the request prevents. So the name is
+				// set directly. http.route is Conditionally Required "if and only if it's available", so it
+				// stays off entirely when nothing matched rather than going out as an empty string, which would
+				// look like a real value when grouping. A panic mid-routing can leave the pattern partial,
+				// which still says more about the request than nothing does.
+				span.SetName(spanName(r))
+				if routePattern := chi.RouteContext(r.Context()).RoutePattern(); routePattern != "" {
+					span.SetAttributes(semconv.HTTPRoute(routePattern))
+				}
+
+				// [http.ErrAbortHandler] is documented as a sentinel to panic with: it aborts the
+				// response and suppresses the server's own log of the panic. That is a deliberate
+				// abort rather than a failure, so it is not recorded as one. Matched by identity,
+				// because it is the sentinel itself which carries that meaning, and not an error
+				// which merely wraps it.
+				if v != nil && v != http.ErrAbortHandler {
+					glueotel.RecordPanic(span, v)
+				}
+			}()
+
 			next.ServeHTTP(w, r)
-
-			// Record whether the client disconnected before we responded. The status code is handled
-			// at the router (see [adaptPage]); here we just keep the signal queryable on the span.
-			if contextCanceled(r.Context().Err()) {
-				span.SetAttributes(attribute.Bool("http.client_disconnected", true))
-			}
-
-			// The route is only known now that the router below has matched, and the formatter below cannot
-			// be relied on to pick it up: its second run happens only when [http.Request.Pattern] reaches
-			// back up here, which any middleware in between replacing the request prevents. So the name is
-			// set directly. http.route is Conditionally Required "if and only if it's available", so it
-			// stays off entirely when nothing matched rather than going out as an empty string, which would
-			// look like a real value when grouping.
-			span.SetName(spanName(r))
-			if routePattern := chi.RouteContext(r.Context()).RoutePattern(); routePattern != "" {
-				span.SetAttributes(semconv.HTTPRoute(routePattern))
-			}
 		}),
 		// The operation name is unused, since [spanName] decides the name from the request. The formatter
 		// is not optional though. [otelhttp.WithSpanNameFormatter] documents that it runs a second time

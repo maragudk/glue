@@ -2,10 +2,13 @@
 package otel
 
 import (
+	"fmt"
 	"math"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // processStart, as close to the start of the process as package initialization gets, which is before main runs.
@@ -29,6 +32,29 @@ var processStart = time.Now()
 func MainSpanAttributes() []attribute.KeyValue {
 	attrs := []attribute.KeyValue{attribute.Bool("main", true)}
 	return append(attrs, uptimeAttributes(time.Since(processStart))...)
+}
+
+// RecordPanic on the span, as an exception event and an error status, for a value recovered while a
+// panic is unwinding. Call it from a deferred function which re-raises the value afterwards, so the
+// panic keeps going and only the span is any the wiser.
+//
+// A value which is already an error is recorded as it is, so exception.type keeps naming the type
+// panicked with, and only anything else is wrapped. The stack trace is the one being unwound, which is
+// where the panic came from rather than where it was recorded.
+//
+// A tracer provider built by [go.opentelemetry.io/otel/sdk/trace.NewTracerProvider] records an
+// exception of its own when a panic unwinds through a span's End, so a span will usually carry two
+// exception events: that one, without a stack trace, and this one with. Recording anyway, because that
+// one sets no status, carries no stack trace, and is switched off by
+// [go.opentelemetry.io/otel/sdk/trace.WithoutPanicRecording].
+func RecordPanic(span trace.Span, v any) {
+	err, ok := v.(error)
+	if !ok {
+		err = fmt.Errorf("panic: %v", v)
+	}
+
+	span.RecordError(err, trace.WithStackTrace(true))
+	span.SetStatus(codes.Error, "panic")
 }
 
 // uptimeAttributes for the given process uptime, as whole seconds and as the floor of the base 10 logarithm
