@@ -11,7 +11,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 	"maragu.dev/is"
@@ -32,12 +31,12 @@ type testTracedMessage struct {
 }
 
 func TestWithTracing(t *testing.T) {
-	// Set up a tracer provider that creates valid spans
-	tp := sdktrace.NewTracerProvider()
-	otel.SetTracerProvider(tp)
-
-	// Set up propagator for trace context
-	otel.SetTextMapPropagator(propagation.TraceContext{})
+	// A tracer provider that creates valid spans and a propagator for trace context, shared by the subtests
+	// below that don't record their own: they just need a real span and trace-context propagation to exist,
+	// not to inspect what got recorded. Both are contained and restored by [oteltest.NewSpanRecorder] and
+	// [oteltest.UsePropagators], including for the subtests further down which set up their own on top.
+	oteltest.NewSpanRecorder(t)
+	oteltest.UsePropagators(t, propagation.TraceContext{})
 
 	t.Run("should handle tracedMessage with context propagation", func(t *testing.T) {
 		// Create a real parent span to simulate HTTP request context

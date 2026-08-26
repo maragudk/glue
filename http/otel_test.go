@@ -662,26 +662,19 @@ func TestOpenTelemetry(t *testing.T) {
 	})
 }
 
-// usePropagators globally for the duration of the test, leaving a propagator which extracts nothing behind
-// afterwards. The middleware's behaviour depends on both trace context and baggage, and it reads them off
-// the request through the global [propagation.TextMapPropagator], which extracts nothing by default, so
-// traceparent and baggage headers go unnoticed without this. That default cannot be
-// restored: setting a propagator wires the global delegator to it for good, and handing the delegator back
-// to [otel.SetTextMapPropagator] leaves it delegating to this one, so an empty composite stands in for it.
-// Like [oteltest.NewSpanRecorder] this mutates global state, so it is not safe for parallel tests.
+// usePropagators globally for the duration of the test, via [oteltest.UsePropagators]. The middleware's
+// behaviour depends on both trace context and baggage, and it reads them off the request through the global
+// [propagation.TextMapPropagator], which extracts nothing by default, so traceparent and baggage headers go
+// unnoticed without this. Like [oteltest.NewSpanRecorder] this mutates global state, so it is not safe for
+// parallel tests.
 func usePropagators(t *testing.T) {
 	t.Helper()
 
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+	p := oteltest.UsePropagators(t, propagation.TraceContext{}, propagation.Baggage{})
 
 	// Every assertion about baggage below the middleware is that there is none, which a propagator not
 	// carrying baggage in the first place would satisfy for the wrong reason
-	is.True(t, slices.Contains(otel.GetTextMapPropagator().Fields(), "baggage"),
-		"expected the propagator under test to carry baggage")
-
-	t.Cleanup(func() {
-		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
-	})
+	is.True(t, slices.Contains(p.Fields(), "baggage"), "expected the propagator under test to carry baggage")
 }
 
 // lastEndedSpan returns the last ended span from the recorder, failing the test if none exist.
