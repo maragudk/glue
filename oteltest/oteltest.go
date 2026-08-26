@@ -3,7 +3,6 @@ package oteltest
 
 import (
 	"context"
-	"sync"
 	"testing"
 
 	"go.opentelemetry.io/otel"
@@ -16,81 +15,75 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
-// pristineTracerProvider and pristinePropagator are captured during this package's own initialization,
-// which Go guarantees runs before any test in this package or a consumer's own [testing.M.Run] -- so before
-// either of those can have configured the global tracer provider or text map propagator. (A sibling package
-// with no dependency relationship to this one could in principle still run its own init first and configure
-// a global before this capture happens; this package has no way to detect or guard against that.) [install]
-// compares the current global against these captured values to tell a real configuration apart from nothing
-// having touched the global yet.
+// pristineTracerProvider and pristinePropagator hold what [otel.GetTracerProvider] and
+// [otel.GetTextMapPropagator] returned as of this package's own initialization. [ensureAttached] compares
+// the current global against these to tell a value worth adopting as a starting target from one that is
+// still untouched.
 var (
 	pristineTracerProvider = otel.GetTracerProvider()
 	pristinePropagator     = otel.GetTextMapPropagator()
 )
 
-// globalTracerProvider and globalPropagator are the stand-ins [install] puts in place of the global tracer
-// provider and text map propagator. [NewSpanRecorder] and [UsePropagators] swap their targets instead of
-// calling [otel.SetTracerProvider] or [otel.SetTextMapPropagator] again, so restoring "previous" afterwards
-// is always a plain, safe assignment.
+// globalTracerProvider and globalPropagator are this package's stand-ins for the global tracer provider and
+// text map propagator. Each is created once and never replaced: [ensureAttached] always reuses the same
+// object, updating only its target, and [NewSpanRecorder]/[UsePropagators] do the same for the duration of
+// a test.
 var (
 	globalTracerProvider *switchableTracerProvider
 	globalPropagator     *switchablePropagator
 )
 
-// install the switchable stand-ins as the global tracer provider and text map propagator, once, the first
-// time either helper below runs.
+// ensureAttached makes [globalTracerProvider] and [globalPropagator] the current global tracer provider
+// and text map propagator, reconciling on every call rather than assuming a single attachment holds for
+// good.
 //
-// Naively saving whatever [otel.GetTracerProvider] or [otel.GetTextMapPropagator] currently returns and
-// restoring it later is not reliable: a provider or propagator installed via [otel.SetTracerProvider] or
-// [otel.SetTextMapPropagator] can go on affecting later calls even after being "restored" away this way,
-// and a [trace.Tracer] obtained via [otel.Tracer] before the first such call in a process can fail to pick
-// up any later one at all. Both problems disappear once this package's own stand-ins are the only thing
-// ever passed to [otel.SetTracerProvider] and [otel.SetTextMapPropagator]: every later change becomes a
-// plain field assignment on a stand-in this package owns, and both stand-ins resolve their current target
-// on every call, live, rather than fixing one when a [trace.Tracer] or propagator reference is first
-// obtained.
+// [otel.SetTracerProvider] and [otel.SetTextMapPropagator] can be called by anything, at any time, so
+// neither stand-in can assume it stays attached once it is. When the current global is not this package's
+// own stand-in -- whether because nothing has attached one yet, or because something else took its place
+// since the last attachment -- this reattaches it, adopting whatever is current as its new target first.
+// The one exception is a global nothing has ever configured (verified against [pristineTracerProvider] or
+// [pristinePropagator]): the target then falls back to an inert stand-in of its own, never the
+// still-untouched global itself, to avoid the stand-in ending up targeting itself once attached.
 //
-// A provider or propagator a consumer configured before this runs -- in a [testing.M.Run] before any test,
-// for instance -- becomes the stand-in's starting target rather than being replaced, so it is what
-// "previous" resolves back to once every helper below has cleaned up. Only when nothing has configured
-// either yet does the starting target default to an inert stand-in of its own (a no-op tracer provider, an
-// empty composite propagator); starting instead from whatever [otel.GetTracerProvider] or
-// [otel.GetTextMapPropagator] returns in that case risks the stand-in ending up targeting itself once
-// installed, looping forever.
-//
-// One case is out of reach regardless: a [trace.Tracer] or propagator reference a consumer obtained and
-// kept, from before this runs, and from before that consumer configured its own provider or propagator --
-// that reference is bound to whatever the consumer set, permanently, and no later call to a helper below
-// can redirect it. That is an existing property of the OpenTelemetry API a test helper has no way to change,
-// not something introduced here.
-var install = sync.OnceFunc(doInstall)
-
-// doInstall is [install]'s body, pulled out on its own so a test can re-run the decision it makes under a
-// freshly reset [install] without duplicating it.
-func doInstall() {
-	tracerTarget := trace.TracerProvider(noop.NewTracerProvider())
-	if current := otel.GetTracerProvider(); current != pristineTracerProvider {
-		tracerTarget = current
+// Because the same [globalTracerProvider]/[globalPropagator] object is always reused, never replaced, a
+// [trace.Tracer] or propagator reference already resolving through one keeps doing so correctly across any
+// number of detachments and reattachments -- only its target changes underneath it. That covers every
+// reference which resolves through [globalTracerProvider]/[globalPropagator] at all; one which was bound
+// directly to something else before either stand-in ever existed stays bound to that other value, and no
+// reattachment here reaches it.
+func ensureAttached() {
+	if globalTracerProvider == nil {
+		globalTracerProvider = newSwitchableTracerProvider(noop.NewTracerProvider())
 	}
-	globalTracerProvider = newSwitchableTracerProvider(tracerTarget)
-	otel.SetTracerProvider(globalTracerProvider)
-
-	propagatorTarget := propagation.TextMapPropagator(propagation.NewCompositeTextMapPropagator())
-	if current := otel.GetTextMapPropagator(); current != pristinePropagator {
-		propagatorTarget = current
+	if current := otel.GetTracerProvider(); current != trace.TracerProvider(globalTracerProvider) {
+		target := trace.TracerProvider(noop.NewTracerProvider())
+		if current != pristineTracerProvider {
+			target = current
+		}
+		globalTracerProvider.setTarget(target)
+		otel.SetTracerProvider(globalTracerProvider)
 	}
-	globalPropagator = newSwitchablePropagator(propagatorTarget)
-	otel.SetTextMapPropagator(globalPropagator)
+
+	if globalPropagator == nil {
+		globalPropagator = newSwitchablePropagator(propagation.NewCompositeTextMapPropagator())
+	}
+	if current := otel.GetTextMapPropagator(); current != propagation.TextMapPropagator(globalPropagator) {
+		target := propagation.TextMapPropagator(propagation.NewCompositeTextMapPropagator())
+		if current != pristinePropagator {
+			target = current
+		}
+		globalPropagator.setTarget(target)
+		otel.SetTextMapPropagator(globalPropagator)
+	}
 }
 
 // NewSpanRecorder for testing.
 // It sets up a [tracetest.SpanRecorder] as the global [sdktrace.TracerProvider] for the duration of the test,
-// restoring whatever provider was in place before once the test ends -- a consumer's own, an outer test's,
-// or an inert stand-in if nothing had configured one yet.
+// restoring whatever provider was active before once the test ends.
 // It is not safe for use with parallel tests, as it mutates the global tracer provider.
 func NewSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
 	t.Helper()
-	install()
+	ensureAttached()
 
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
@@ -107,12 +100,11 @@ func NewSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
 }
 
 // UsePropagators sets the given propagators, composed, as the global [propagation.TextMapPropagator] for
-// the duration of the test, restoring whatever propagator was in place before once the test ends -- a
-// consumer's own, an outer test's, or an inert stand-in if nothing had configured one yet.
+// the duration of the test, restoring whatever propagator was active before once the test ends.
 // It is not safe for use with parallel tests, as it mutates the global text map propagator.
 func UsePropagators(t *testing.T, propagators ...propagation.TextMapPropagator) propagation.TextMapPropagator {
 	t.Helper()
-	install()
+	ensureAttached()
 
 	previous := globalPropagator.getTarget()
 	p := propagation.NewCompositeTextMapPropagator(propagators...)

@@ -10,10 +10,8 @@ import (
 )
 
 // switchableTracerProvider is a [trace.TracerProvider] whose target can be swapped after a
-// [switchableTracer] has already been handed out. A [trace.Tracer] obtained via [otel.Tracer] before this
-// package's stand-in was ever installed as the global provider can end up bound to it regardless, so that
-// Tracer's spans need its eventual target to resolve live, at the moment it starts a span, rather than
-// fixed to whatever was current when the Tracer was obtained.
+// [switchableTracer] has already been handed out: [switchableTracer.Start] resolves the provider's current
+// target live, on every call, rather than fixing one when [switchableTracerProvider.Tracer] was called.
 type switchableTracerProvider struct {
 	embedded.TracerProvider
 
@@ -61,11 +59,9 @@ func (t *switchableTracer) Start(ctx context.Context, spanName string, opts ...t
 	return t.provider.getTarget().Tracer(t.name, t.opts...).Start(ctx, spanName, opts...)
 }
 
-// switchablePropagator is a [propagation.TextMapPropagator] whose target can be swapped after a caller
-// has already obtained a reference to it, for the same reason [switchableTracerProvider] exists: a caller
-// holding a reference obtained via [otel.GetTextMapPropagator] from before this package's stand-in was
-// installed as the global propagator can end up bound to it regardless, and still needs later swaps to
-// take effect.
+// switchablePropagator is a [propagation.TextMapPropagator] whose target can be swapped after it has
+// already been handed out: Inject, Extract, and Fields all resolve the current target live, on every call,
+// for the same reason [switchableTracerProvider] does.
 type switchablePropagator struct {
 	mu     sync.RWMutex
 	target propagation.TextMapPropagator

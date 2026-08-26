@@ -16,7 +16,7 @@ func TestSwitchableTracerProvider(t *testing.T) {
 		provider := newSwitchableTracerProvider(noop.NewTracerProvider())
 
 		// Obtained while the provider still targets noop -- the situation a [trace.Tracer] cached before
-		// [install] ever configures anything is in.
+		// [ensureAttached] ever configures anything is in.
 		tracer := provider.Tracer("test")
 
 		sr := tracetest.NewSpanRecorder()

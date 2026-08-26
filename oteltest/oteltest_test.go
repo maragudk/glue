@@ -1,6 +1,7 @@
 package oteltest_test
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
@@ -63,6 +65,32 @@ func TestNewSpanRecorder(t *testing.T) {
 		is.Equal(t, 1, len(spans))
 		is.Equal(t, "outer-span", spans[0].Name())
 	})
+
+	t.Run("reattaches after a consumer replaces the global tracer provider directly, restoring the consumer's provider on cleanup", func(t *testing.T) {
+		oteltest.NewSpanRecorder(t)
+
+		// Something other than this package taking over the global directly, after it had already attached.
+		consumerSR := tracetest.NewSpanRecorder()
+		consumerTP := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(consumerSR))
+		t.Cleanup(func() { _ = consumerTP.Shutdown(context.WithoutCancel(t.Context())) })
+		otel.SetTracerProvider(consumerTP)
+
+		t.Run("inner", func(t *testing.T) {
+			sr := oteltest.NewSpanRecorder(t)
+
+			_, span := otel.Tracer("test").Start(t.Context(), "test-span")
+			span.End()
+
+			is.Equal(t, 1, len(sr.Ended()), "expected the reattached recorder to receive spans")
+		})
+
+		// The inner recorder's cleanup has already run, so the provider set directly above should be back
+		// in control, not the reattached stand-in's now-defunct target.
+		_, span := otel.Tracer("test").Start(t.Context(), "after-cleanup-span")
+		span.End()
+
+		is.Equal(t, 1, len(consumerSR.Ended()), "expected the directly-set provider to be active again")
+	})
 }
 
 func TestUsePropagators(t *testing.T) {
@@ -112,6 +140,25 @@ func TestUsePropagators(t *testing.T) {
 		fields := otel.GetTextMapPropagator().Fields()
 		is.True(t, slices.Contains(fields, "baggage"), "expected the outer propagator's baggage field back")
 		is.True(t, !slices.Contains(fields, "traceparent"), "expected the inner propagator to be gone")
+	})
+
+	t.Run("reattaches after a consumer replaces the global propagator directly, restoring the consumer's propagator on cleanup", func(t *testing.T) {
+		oteltest.UsePropagators(t, propagation.Baggage{})
+
+		// Something other than this package taking over the global directly, after it had already attached.
+		otel.SetTextMapPropagator(propagation.TraceContext{})
+
+		t.Run("inner", func(t *testing.T) {
+			oteltest.UsePropagators(t, propagation.Baggage{})
+
+			is.True(t, slices.Contains(otel.GetTextMapPropagator().Fields(), "baggage"),
+				"expected the reattached propagator to be active")
+		})
+
+		// The inner test's cleanup has already run, so the propagator set directly above should be back in
+		// control, not the reattached stand-in's now-defunct target.
+		is.True(t, slices.Contains(otel.GetTextMapPropagator().Fields(), "traceparent"),
+			"expected the directly-set propagator to be active again")
 	})
 }
 
