@@ -14,6 +14,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 	"maragu.dev/is"
 
 	"maragu.dev/glue/jobs"
@@ -32,12 +33,23 @@ type testTracedMessage struct {
 }
 
 func TestWithTracing(t *testing.T) {
-	// Set up a tracer provider that creates valid spans
+	// Set up a tracer provider that creates valid spans, leaving a no-op provider behind afterwards. The
+	// default cannot simply be restored: setting a tracer provider wires the global delegator to it for
+	// good, so handing the delegator back to [otel.SetTracerProvider] would leave it delegating to this
+	// one, not to whatever ran before it. A no-op provider stands in for it instead.
 	tp := sdktrace.NewTracerProvider()
 	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.WithoutCancel(t.Context()))
+		otel.SetTracerProvider(noop.NewTracerProvider())
+	})
 
-	// Set up propagator for trace context
+	// Set up propagator for trace context, leaving a propagator which extracts nothing behind afterwards for
+	// the same reason (see usePropagators in http/otel_test.go for the fuller explanation).
 	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
+	})
 
 	t.Run("should handle tracedMessage with context propagation", func(t *testing.T) {
 		// Create a real parent span to simulate HTTP request context
