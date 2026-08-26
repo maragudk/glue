@@ -2,10 +2,13 @@ package oteltest_test
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 	"maragu.dev/is"
@@ -25,15 +28,94 @@ func TestNewSpanRecorder(t *testing.T) {
 		is.Equal(t, "test-span", spans[0].Name())
 	})
 
-	t.Run("restores the previous tracer provider on cleanup", func(t *testing.T) {
-		previous := otel.GetTracerProvider()
-
-		// Run in a sub-test so its cleanup executes before our assertion.
+	t.Run("does not record spans through the global tracer after its own cleanup", func(t *testing.T) {
+		// Run in a sub-test so its cleanup executes before the span below is started. A shut down recorder
+		// wired permanently into the SDK's internal placeholder (the bug this guards against, see pinGlobals)
+		// would still be reachable here, since that placeholder forwards every call to its delegate rather
+		// than caching one.
+		var sr *tracetest.SpanRecorder
 		t.Run("inner", func(t *testing.T) {
-			oteltest.NewSpanRecorder(t)
+			sr = oteltest.NewSpanRecorder(t)
 		})
 
-		is.Equal(t, previous, otel.GetTracerProvider())
+		_, span := otel.Tracer("test").Start(t.Context(), "after-cleanup-span")
+		span.End()
+
+		is.Equal(t, 0, len(sr.Ended()), "expected the shut down recorder to receive no further spans")
+	})
+
+	t.Run("restores the outer recorder for a nested test", func(t *testing.T) {
+		outer := oteltest.NewSpanRecorder(t)
+
+		t.Run("inner", func(t *testing.T) {
+			inner := oteltest.NewSpanRecorder(t)
+
+			_, span := otel.Tracer("test").Start(t.Context(), "inner-span")
+			span.End()
+
+			is.Equal(t, 1, len(inner.Ended()))
+		})
+
+		// The inner recorder's cleanup has already run, so a span started now has to land back on the
+		// outer recorder rather than going nowhere or leaking into the inner one.
+		_, span := otel.Tracer("test").Start(t.Context(), "outer-span")
+		span.End()
+
+		spans := outer.Ended()
+		is.Equal(t, 1, len(spans))
+		is.Equal(t, "outer-span", spans[0].Name())
+	})
+}
+
+func TestUsePropagators(t *testing.T) {
+	t.Run("injects with the given propagators", func(t *testing.T) {
+		// A real recorder, so the started span carries a valid span context to inject: the propagator has
+		// nothing to write for the invalid context a no-op tracer produces.
+		oteltest.NewSpanRecorder(t)
+		oteltest.UsePropagators(t, propagation.TraceContext{})
+
+		ctx, span := otel.Tracer("test").Start(t.Context(), "test-span")
+		defer span.End()
+
+		carrier := propagation.MapCarrier{}
+		otel.GetTextMapPropagator().Inject(ctx, carrier)
+		is.True(t, carrier.Get("traceparent") != "", "expected a traceparent header to be injected")
+	})
+
+	t.Run("does not propagate through the global propagator after its own cleanup", func(t *testing.T) {
+		// A real recorder for the whole test, so the span injected below always carries a valid context
+		// regardless of what the inner sub-test does -- otherwise a propagator with nothing to inject would
+		// pass this check for the wrong reason.
+		oteltest.NewSpanRecorder(t)
+
+		// Run in a sub-test so its cleanup executes before the injection below. A propagator wired
+		// permanently into the SDK's internal placeholder (the bug this guards against, see pinGlobals) has
+		// no shutdown to neutralize it the way a tracer provider does, so it would still be reachable here
+		// if "previous" had ever been that placeholder.
+		t.Run("inner", func(t *testing.T) {
+			oteltest.UsePropagators(t, propagation.TraceContext{})
+		})
+
+		ctx, span := otel.Tracer("test").Start(t.Context(), "test-span")
+		defer span.End()
+
+		carrier := propagation.MapCarrier{}
+		otel.GetTextMapPropagator().Inject(ctx, carrier)
+		is.Equal(t, "", carrier.Get("traceparent"), "expected no propagator to be installed after cleanup")
+	})
+
+	t.Run("restores the outer propagator for a nested test", func(t *testing.T) {
+		oteltest.UsePropagators(t, propagation.Baggage{})
+
+		t.Run("inner", func(t *testing.T) {
+			oteltest.UsePropagators(t, propagation.TraceContext{})
+		})
+
+		// The inner test's cleanup has already run, so only baggage should propagate again, not trace
+		// context and not nothing.
+		fields := otel.GetTextMapPropagator().Fields()
+		is.True(t, slices.Contains(fields, "baggage"), "expected the outer propagator's baggage field back")
+		is.True(t, !slices.Contains(fields, "traceparent"), "expected the inner propagator to be gone")
 	})
 }
 
