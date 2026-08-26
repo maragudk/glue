@@ -29,10 +29,8 @@ func TestNewSpanRecorder(t *testing.T) {
 	})
 
 	t.Run("does not record spans through the global tracer after its own cleanup", func(t *testing.T) {
-		// Run in a sub-test so its cleanup executes before the span below is started. A shut down recorder
-		// wired permanently into the SDK's internal placeholder (the bug this guards against, see pinGlobals)
-		// would still be reachable here, since that placeholder forwards every call to its delegate rather
-		// than caching one.
+		// Run in a sub-test so its cleanup executes before the span below is started, so a span started
+		// afterwards must not still reach the recorder that cleanup was supposed to retire.
 		var sr *tracetest.SpanRecorder
 		t.Run("inner", func(t *testing.T) {
 			sr = oteltest.NewSpanRecorder(t)
@@ -88,10 +86,8 @@ func TestUsePropagators(t *testing.T) {
 		// pass this check for the wrong reason.
 		oteltest.NewSpanRecorder(t)
 
-		// Run in a sub-test so its cleanup executes before the injection below. A propagator wired
-		// permanently into the SDK's internal placeholder (the bug this guards against, see pinGlobals) has
-		// no shutdown to neutralize it the way a tracer provider does, so it would still be reachable here
-		// if "previous" had ever been that placeholder.
+		// Run in a sub-test so its cleanup executes before the injection below, so an injection afterwards
+		// must not still carry what the inner test's propagator would have written.
 		t.Run("inner", func(t *testing.T) {
 			oteltest.UsePropagators(t, propagation.TraceContext{})
 		})
