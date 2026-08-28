@@ -382,6 +382,11 @@ func needsEncodedWord(name string) bool {
 // The preheader and the keywords are text, and are HTML-escaped where they go into the email, so
 // neither can bring markup of its own into it. The email at path and the layout around it are markup
 // already, and go in as they are.
+// The body is substituted into the layout on its own first, since it is a template in its own right
+// and its placeholders must still expand. Everything else then goes in a single [strings.Replacer]
+// pass over the combined document, so a substituted value is never rescanned: a {{...}} sequence
+// inside a preheader or keyword value arrives in the output as literal text, not as a placeholder of
+// its own.
 // Email preheader text should be between 40-130 characters long.
 func getEmail(emails fs.FS, path, preheader string, keywords model.Keywords) string {
 	emailBody, err := fs.ReadFile(emails, path+".html")
@@ -394,21 +399,26 @@ func getEmail(emails fs.FS, path, preheader string, keywords model.Keywords) str
 		panic(err)
 	}
 
-	email := string(layout)
-	email = strings.ReplaceAll(email, "{{preheader}}", template.HTMLEscapeString(preheader))
-	email = strings.ReplaceAll(email, "{{body}}", string(emailBody))
+	email := strings.ReplaceAll(string(layout), "{{body}}", string(emailBody))
 
+	var unsubscribe string
 	if _, ok := keywords["unsubscribe"]; ok {
-		email = strings.ReplaceAll(email, "{{unsubscribe}}", "{{{ pm:unsubscribe }}}")
-	} else {
-		email = strings.ReplaceAll(email, "{{unsubscribe}}", "")
+		unsubscribe = "{{{ pm:unsubscribe }}}"
 	}
 
+	oldnew := []string{
+		"{{preheader}}", template.HTMLEscapeString(preheader),
+		"{{unsubscribe}}", unsubscribe,
+	}
 	for keyword, replacement := range keywords {
-		email = strings.ReplaceAll(email, "{{"+keyword+"}}", template.HTMLEscapeString(replacement))
+		// Already handled above, and by its dedicated condition rather than its value.
+		if keyword == "unsubscribe" {
+			continue
+		}
+		oldnew = append(oldnew, "{{"+keyword+"}}", template.HTMLEscapeString(replacement))
 	}
 
-	return email
+	return strings.NewReplacer(oldnew...).Replace(email)
 }
 
 func (s *Sender) operationTracerStart(ctx context.Context, operation string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {

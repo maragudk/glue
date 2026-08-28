@@ -131,6 +131,83 @@ func TestSender_SendTransactional(t *testing.T) {
 		})
 	}
 
+	// Substituted values are data, not templates: a {{...}} sequence inside one must arrive in the
+	// output literally, never expanded, regardless of which other keyword happens to be substituted
+	// first.
+	t.Run("does not reprocess a {{...}} sequence in a substituted value as a template", func(t *testing.T) {
+		sender, rec := newSender(t, nil)
+
+		opts := newSendOptions()
+		opts.Preheader = "See {{appName}} for more"
+		opts.Keywords = model.Keywords{
+			"title":   "About {{content}}",
+			"content": "About {{title}}",
+		}
+
+		err := sender.SendTransactional(t.Context(), opts)
+		is.NotError(t, err)
+
+		body := rec.get().HtmlBody
+		is.True(t, strings.Contains(body, `<span class="preheader">See {{appName}} for more</span>`), "preheader placeholder was expanded")
+		is.True(t, strings.Contains(body, "<h1>About {{content}}</h1>"), "title keyword placeholder was expanded")
+		is.True(t, strings.Contains(body, "<p>About {{title}}</p>"), "content keyword placeholder was expanded")
+	})
+
+	// Map iteration order is randomised per run, so a substitution order bug would show up as flaky
+	// output rather than a hard failure. Repeating the render catches that instead of relying on luck.
+	t.Run("renders identically every time, regardless of keyword map order", func(t *testing.T) {
+		sender, rec := newSender(t, nil)
+
+		opts := newSendOptions()
+		opts.Keywords = model.Keywords{
+			"title":   "About {{content}}",
+			"content": "About {{title}}",
+		}
+
+		for range 25 {
+			err := sender.SendTransactional(t.Context(), opts)
+			is.NotError(t, err)
+
+			body := rec.get().HtmlBody
+			is.True(t, strings.Contains(body, "<h1>About {{content}}</h1>"), "title keyword placeholder was expanded")
+			is.True(t, strings.Contains(body, "<p>About {{title}}</p>"), "content keyword placeholder was expanded")
+		}
+	})
+
+	// Whether the unsubscribe placeholder resolves to Postmark's own substitution tag or to nothing
+	// turns on the presence of the "unsubscribe" key alone, never its value.
+	unsubscribe := []struct {
+		name     string
+		keywords model.Keywords
+		expected string
+	}{
+		{
+			name:     "renders the Postmark unsubscribe tag when the keyword is present",
+			keywords: model.Keywords{"unsubscribe": "anything"},
+			expected: `<p class="f-fallback sub align-center">{{{ pm:unsubscribe }}}</p>`,
+		},
+		{
+			name:     "renders nothing when the keyword is absent",
+			keywords: nil,
+			expected: `<p class="f-fallback sub align-center"></p>`,
+		},
+	}
+
+	for _, test := range unsubscribe {
+		t.Run(test.name, func(t *testing.T) {
+			sender, rec := newSender(t, nil)
+
+			opts := newSendOptions()
+			opts.Keywords = test.keywords
+
+			err := sender.SendTransactional(t.Context(), opts)
+			is.NotError(t, err)
+
+			body := rec.get().HtmlBody
+			is.True(t, strings.Contains(body, test.expected), "unsubscribe placeholder did not render as expected")
+		})
+	}
+
 	// The sender fills in these three itself, from what it and the send were given, and the templates
 	// under emails use them.
 	t.Run("replaces the always-included keywords in the email", func(t *testing.T) {
