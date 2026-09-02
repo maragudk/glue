@@ -267,7 +267,7 @@ func Logout(r *Router, log *slog.Logger, sd sessionDestroyer, page html.PageFunc
 
 		if err := sd.Destroy(props.Ctx); err != nil {
 			log.ErrorContext(props.Ctx, "Error logging out", "error", err)
-			return html.ErrorPage(page), err
+			return html.ErrorPage(page, props), err
 		}
 
 		http.Redirect(props.W, props.R, redirect, http.StatusFound)
