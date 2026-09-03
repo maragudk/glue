@@ -21,6 +21,11 @@ type PageProps struct {
 	HideAuth    bool
 	UserID      *model.UserID
 	Permissions []model.Permission
+
+	// Nonce for this request's Content-Security-Policy. Inline scripts and styles in the page carry it
+	// to be allowed to run, in whichever of the two the policy nonces. Empty where the policy nonces
+	// neither.
+	Nonce string
 }
 
 func (p PageProps) HasPermission(perm model.Permission) bool {

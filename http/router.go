@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	. "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/http"
+	"maragu.dev/httph"
 
 	"maragu.dev/glue/html"
 )
@@ -86,6 +87,10 @@ func (r *Router) Use(middlewares ...Middleware) {
 	r.Mux.Use(middlewares...)
 }
 
+// NotFound handler for paths this router matches nothing for. On a router handed out by [Router.Group]
+// it is the enclosing router that ends up serving the handler, wrapped in the group's middleware, so
+// registering it in a group nested more than one level deep installs it where nothing routes and has no
+// effect.
 func (r *Router) NotFound(h http.HandlerFunc) {
 	r.Mux.NotFound(h)
 }
@@ -97,6 +102,7 @@ func GetProps(w http.ResponseWriter, r *http.Request) html.PageProps {
 		UserID:      GetUserIDFromContext(r.Context()),
 		W:           w,
 		Permissions: GetPermissionsFromContext(r.Context()),
+		Nonce:       httph.NonceFromContext(r.Context()),
 	}
 }
 

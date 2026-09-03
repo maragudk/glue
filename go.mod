@@ -25,7 +25,7 @@ require (
 	maragu.dev/errors v0.3.0
 	maragu.dev/gomponents v1.3.0
 	maragu.dev/goqite v0.4.0
-	maragu.dev/httph v0.3.7
+	maragu.dev/httph v0.4.0
 	maragu.dev/is v0.3.1
 	maragu.dev/migrate v0.6.0
 )

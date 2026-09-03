@@ -12,7 +12,7 @@ import (
 
 func NotFound(page html.PageFunc) http.HandlerFunc {
 	return Adapt(func(w http.ResponseWriter, r *http.Request) (Node, error) {
-		return html.NotFoundPage(page), httph.HTTPError{Code: http.StatusNotFound}
+		return html.NotFoundPage(page, GetProps(w, r)), httph.HTTPError{Code: http.StatusNotFound}
 	})
 }
 

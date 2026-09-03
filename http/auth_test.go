@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	g "maragu.dev/gomponents"
+	"maragu.dev/httph"
 	"maragu.dev/is"
 
 	"maragu.dev/glue/html"
@@ -502,6 +503,33 @@ func TestLogout(t *testing.T) {
 			is.Equal(t, test.expectRedirect, rec.Header().Get("Location"))
 		})
 	}
+}
+
+func TestLogoutErrorPage(t *testing.T) {
+	t.Run("renders the error page with the request's props when the session cannot be destroyed", func(t *testing.T) {
+		var props html.PageProps
+		mux := chi.NewRouter()
+		router := &gluehttp.Router{Mux: mux}
+		gluehttp.Logout(router, slog.New(slog.DiscardHandler), &mockSessionDestroyer{err: errors.New("destroy error")},
+			func(p html.PageProps, children ...g.Node) g.Node {
+				props = p
+				return g.Group(children)
+			})
+
+		userID := model.UserID("u_123")
+		req := httptest.NewRequest(http.MethodPost, "/logout", nil)
+		req = req.WithContext(context.WithValue(req.Context(), gluehttp.ContextKey("userID"), &userID))
+
+		rec := httptest.NewRecorder()
+		httph.ContentSecurityPolicy(func(opts *httph.ContentSecurityPolicyOptions) {
+			opts.ScriptNonce = true
+		})(mux).ServeHTTP(rec, req)
+
+		is.Equal(t, http.StatusInternalServerError, rec.Code)
+		is.Equal(t, "Something went wrong", props.Title)
+		is.True(t, props.Nonce != "", "the error page should have gotten a nonce")
+		is.Equal(t, &userID, props.UserID)
+	})
 }
 
 type mockSessionDestroyer struct {
