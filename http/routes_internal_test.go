@@ -156,6 +156,25 @@ func TestSetupRoutes(t *testing.T) {
 			"got Cache-Control "+strings.Join(res.Header().Values("Cache-Control"), " | "))
 	})
 
+	t.Run("flushes a nonced response through the whole middleware chain", func(t *testing.T) {
+		s, _ := newTestRoutes(t, NewServerOptions{
+			CSP: scriptNonce,
+			HTTPRouterInjector: func(r *Router) {
+				r.Get("/thing", func(props html.PageProps) (g.Node, error) {
+					_, err := props.W.Write([]byte("thing"))
+					is.NotError(t, err)
+					is.NotError(t, http.NewResponseController(props.W).Flush())
+					return nil, nil
+				})
+			},
+		})
+
+		res := get(t, s, "/thing")
+
+		is.Equal(t, http.StatusOK, res.Code)
+		is.True(t, res.Flushed, "the flush should have reached the underlying writer")
+	})
+
 	t.Run("renders a matched page with a nonce", func(t *testing.T) {
 		var nonce string
 		s, _ := newTestRoutes(t, NewServerOptions{

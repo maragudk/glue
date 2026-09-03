@@ -2,6 +2,7 @@ package http_test
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -123,6 +124,34 @@ func TestNoStoreIfNonceWriter(t *testing.T) {
 		is.True(t, hijacker.hijacked)
 	})
 
+	t.Run("flushes through a writer which exposes nothing but Unwrap", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		serveWrapped(t, &unwrapOnlyWriter{ResponseWriter: rec}, func(w http.ResponseWriter, r *http.Request) {
+			w.(http.Flusher).Flush()
+		})
+
+		is.True(t, rec.Flushed, "the flush should have reached the underlying writer")
+	})
+
+	t.Run("flushes through a writer which exposes nothing but Unwrap, via a response controller", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		serveWrapped(t, &unwrapOnlyWriter{ResponseWriter: rec}, func(w http.ResponseWriter, r *http.Request) {
+			is.NotError(t, http.NewResponseController(w).Flush())
+		})
+
+		is.True(t, rec.Flushed, "the flush should have reached the underlying writer")
+	})
+
+	t.Run("hijacks through a writer which exposes nothing but Unwrap", func(t *testing.T) {
+		hijacker := &mockHijacker{ResponseWriter: httptest.NewRecorder()}
+		serveWrapped(t, &unwrapOnlyWriter{ResponseWriter: hijacker}, func(w http.ResponseWriter, r *http.Request) {
+			_, _, err := w.(http.Hijacker).Hijack()
+			is.NotError(t, err)
+		})
+
+		is.True(t, hijacker.hijacked, "the hijack should have reached the underlying writer")
+	})
+
 	t.Run("reads from through to the writer it was given", func(t *testing.T) {
 		readerFrom := &mockReaderFrom{ResponseWriter: httptest.NewRecorder()}
 
@@ -139,12 +168,48 @@ func TestNoStoreIfNonceWriter(t *testing.T) {
 		is.Equal(t, "no-store", readerFrom.Header().Get("Cache-Control"))
 	})
 
-	t.Run("reports an error where the writer it was given cannot hijack", func(t *testing.T) {
+	t.Run("reports hijacking unsupported where nothing below it can hijack", func(t *testing.T) {
 		serveWithNonce(t, true, func(w http.ResponseWriter, r *http.Request) {
 			_, _, err := w.(http.Hijacker).Hijack()
-			is.True(t, err != nil, "hijacking a recorder should fail")
+			is.True(t, errors.Is(err, http.ErrNotSupported), "hijacking a recorder should be unsupported")
 		})
 	})
+
+	t.Run("reports flushing unsupported where nothing below it can flush", func(t *testing.T) {
+		serveWrapped(t, &unwrapOnlyWriter{ResponseWriter: &plainWriter{}}, func(w http.ResponseWriter, r *http.Request) {
+			err := http.NewResponseController(w).Flush()
+			is.True(t, errors.Is(err, http.ErrNotSupported), "flushing a writer with no flusher should be unsupported")
+		})
+	})
+}
+
+// plainWriter is an [http.ResponseWriter] and nothing more, so that a chain ending in it can serve
+// neither a flush nor a hijack.
+type plainWriter struct {
+	header http.Header
+}
+
+func (p *plainWriter) Header() http.Header {
+	if p.header == nil {
+		p.header = http.Header{}
+	}
+	return p.header
+}
+
+func (p *plainWriter) Write(b []byte) (int, error) {
+	return len(b), nil
+}
+
+func (p *plainWriter) WriteHeader(code int) {}
+
+// unwrapOnlyWriter passes on nothing but Unwrap, the way a middleware's writer does when it leaves the
+// optional interfaces to [http.ResponseController] instead of declaring them itself.
+type unwrapOnlyWriter struct {
+	http.ResponseWriter
+}
+
+func (u *unwrapOnlyWriter) Unwrap() http.ResponseWriter {
+	return u.ResponseWriter
 }
 
 type mockReaderFrom struct {
@@ -165,6 +230,17 @@ type mockHijacker struct {
 func (m *mockHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	m.hijacked = true
 	return nil, nil, nil
+}
+
+// serveWrapped runs the given handler behind [gluehttp.NoStoreIfNonce] on a nonced request, writing to
+// the given writer rather than to a recorder of its own.
+func serveWrapped(t *testing.T, w http.ResponseWriter, h http.HandlerFunc) {
+	t.Helper()
+
+	csp := httph.ContentSecurityPolicy(func(opts *httph.ContentSecurityPolicyOptions) {
+		opts.ScriptNonce = true
+	})
+	csp(gluehttp.NoStoreIfNonce(h)).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 }
 
 // serveWithNonce runs the given handler behind [gluehttp.NoStoreIfNonce], with the CSP middleware above

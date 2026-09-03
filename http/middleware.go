@@ -2,7 +2,6 @@ package http
 
 import (
 	"bufio"
-	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -47,11 +46,13 @@ func NoStoreIfNonce(next http.Handler) http.Handler {
 // The header map is still open for writing at that point, and nothing written to it later would reach
 // the client anyway.
 //
-// Flush, Hijack and ReadFrom are declared regardless of what the wrapped writer can do, falling back to
-// doing nothing, to an error, and to a plain copy where it cannot. So a handler which asserts one of
-// them keeps working over a writer which supports it, at the price of the assertion no longer answering
-// whether the writer does. [http.Pusher] is not carried across, and [http.ResponseController] reaches
-// the deadline and full-duplex controls through Unwrap.
+// Flush, Hijack and ReadFrom are declared regardless of what the wrapped writer can do, so a handler
+// which asserts one of them keeps working, at the price of the assertion no longer answering whether the
+// writer underneath supports it. Flush and Hijack go down through an [http.ResponseController], which
+// follows the chain of Unwrap methods rather than stopping at the writer immediately below, since a
+// writer there may well declare neither and leave both to that controller. They report
+// [http.ErrNotSupported] where nothing in the chain can serve them. ReadFrom falls back to a plain copy,
+// and [http.Pusher] is not carried across at all.
 type noStoreWriter struct {
 	http.ResponseWriter
 	started bool
@@ -67,20 +68,20 @@ func (w *noStoreWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
-func (w *noStoreWriter) Flush() {
+// FlushError is the form [http.ResponseController] prefers, so that a caller going through one gets the
+// reason a flush did not happen instead of silence.
+func (w *noStoreWriter) FlushError() error {
 	w.setNoStore()
 
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *noStoreWriter) Flush() {
+	_ = w.FlushError()
 }
 
 func (w *noStoreWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	h, ok := w.ResponseWriter.(http.Hijacker)
-	if !ok {
-		return nil, nil, errors.New("the wrapped http.ResponseWriter does not implement http.Hijacker")
-	}
-	return h.Hijack()
+	return http.NewResponseController(w.ResponseWriter).Hijack()
 }
 
 func (w *noStoreWriter) ReadFrom(r io.Reader) (int64, error) {
