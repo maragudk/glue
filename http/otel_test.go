@@ -57,9 +57,9 @@ func TestOpenTelemetry(t *testing.T) {
 		}
 	})
 
-	// A router which has already matched before the middleware runs sets [http.Request.Pattern] on the
-	// request the middleware is handed, so these cover the naming against a router above the middleware
-	// as well as below it.
+	// A chi router which has already matched before the middleware runs leaves the pattern it matched in
+	// both places the naming reads, so these cover the naming against a router above the middleware as
+	// well as below it.
 	t.Run("sets span name to method and route pattern below another router", func(t *testing.T) {
 		t.Run("mounted under an outer mux", func(t *testing.T) {
 			sr := oteltest.NewSpanRecorder(t)
@@ -93,6 +93,97 @@ func TestOpenTelemetry(t *testing.T) {
 			is.Equal(t, "GET /api/things/{id}", span.Name())
 			is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.HTTPRoute("/api/things/{id}")))
 		})
+	})
+
+	// [http.ServeMux] reports its match on [http.Request.Pattern] rather than in a chi route context.
+	// Its patterns can name a method and a host in front of the path, neither of which belongs in a span
+	// name or in http.route. The request targets /things/42 throughout, and httptest gives it the host
+	// example.com, which is what the host pattern matches on.
+	t.Run("sets span name to method and route pattern below a standard library mux", func(t *testing.T) {
+		tests := []struct {
+			name          string
+			pattern       string
+			expectedRoute string
+		}{
+			{name: "path only", pattern: "/things/{id}", expectedRoute: "/things/{id}"},
+			{name: "method and path", pattern: "GET /things/{id}", expectedRoute: "/things/{id}"},
+			{name: "host, method and path", pattern: "GET example.com/things/{id}", expectedRoute: "/things/{id}"},
+			{name: "root", pattern: "GET /", expectedRoute: "/"},
+			{name: "no match", pattern: "GET /nothing/like/it", expectedRoute: ""},
+			{name: "method not allowed", pattern: "POST /things/{id}", expectedRoute: ""},
+		}
+
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				sr := oteltest.NewSpanRecorder(t)
+
+				mux := http.NewServeMux()
+				mux.HandleFunc(test.pattern, func(w http.ResponseWriter, r *http.Request) {})
+
+				h := gluehttp.OpenTelemetry(mux)
+				h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/things/42", nil))
+
+				span := lastEndedSpan(t, sr)
+				if test.expectedRoute == "" {
+					// Exactly the method, so a trailing space fails here
+					is.Equal(t, "GET", span.Name())
+					is.True(t, !oteltest.HasAttributeKey(span.Attributes(), "http.route"), "unexpected http.route attribute")
+					return
+				}
+
+				is.Equal(t, "GET "+test.expectedRoute, span.Name())
+				is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.HTTPRoute(test.expectedRoute)),
+					"expected http.route "+test.expectedRoute)
+			})
+		}
+	})
+
+	// Both places a router can report its match are populated here, with different patterns, so which one
+	// wins is observable: the chi router matched the wildcard it mounted the standard library mux at, and
+	// the mux matched the more specific pattern registered inside it. The chi pattern wins, which does
+	// lose precision here. It is still the right way round, because chi reports its match in the request
+	// context, which survives a middleware replacing the request, and [http.Request.Pattern] does not.
+	t.Run("prefers the chi route pattern over the one on the request", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		leaf := http.NewServeMux()
+		leaf.HandleFunc("GET /leaf/{id}", func(w http.ResponseWriter, r *http.Request) {})
+
+		mux := chi.NewMux()
+		mux.Use(gluehttp.OpenTelemetry)
+		mux.Mount("/leaf", leaf)
+
+		req := httptest.NewRequest(http.MethodGet, "/leaf/42", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		// Both routers matched, so neither pattern is the empty string a miss would leave behind
+		is.Equal(t, http.StatusOK, rec.Code)
+
+		span := lastEndedSpan(t, sr)
+		is.Equal(t, "GET /leaf/*", span.Name())
+		is.True(t, oteltest.HasAttribute(span.Attributes(), semconv.HTTPRoute("/leaf/*")))
+	})
+
+	// [http.ServeMux] answers a CONNECT request for a registered subtree with a trailing-slash redirect,
+	// and puts the request path, not a registered pattern, on [http.Request.Pattern] when it does. A path
+	// the client chose is unbounded, so a span named after one would be a new name per request.
+	t.Run("does not name a span after the path of a redirected CONNECT request", func(t *testing.T) {
+		sr := oteltest.NewSpanRecorder(t)
+
+		mux := http.NewServeMux()
+		mux.HandleFunc("/things/{id}/", func(w http.ResponseWriter, r *http.Request) {})
+
+		h := gluehttp.OpenTelemetry(mux)
+		req := httptest.NewRequest(http.MethodConnect, "/things/anything-at-all", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		is.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+
+		span := lastEndedSpan(t, sr)
+		is.Equal(t, "CONNECT", span.Name())
+		is.True(t, !oteltest.HasAttributeKey(span.Attributes(), "http.route"), "unexpected http.route attribute")
 	})
 
 	t.Run("sets main span attributes", func(t *testing.T) {
