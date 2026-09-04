@@ -10,50 +10,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:17
-        ports:
-          - "5433:5432"
-        env:
-          POSTGRES_USER: "test"
-          POSTGRES_PASSWORD: "test"
-          POSTGRES_DB: "template1"
-      versitygw:
-        image: versity/versitygw:latest
-        ports:
-          - "7072:7070"
-        env:
-          ROOT_ACCESS_KEY: "access"
-          ROOT_SECRET_KEY: "secretsecret"
-          VGW_BACKEND: "posix"
-          VGW_BACKEND_ARG: "/var/lib"
-
-    strategy:
-      fail-fast: false
-      matrix:
-        go:
-          - { go-version: stable }
-          - { go-version-file: go.mod }
-        deps:
-          - locked
-          - latest
-
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version: ${{ matrix.go.go-version }}
-          go-version-file: ${{ matrix.go.go-version-file }}
-
-      - name: Update to latest deps
-        if: matrix.deps == 'latest'
-        run: go get -u -t ./...
-
-      - name: Test
-        run: go test -shuffle on ./...
+    uses: maragudk/workflows/.github/workflows/compatibility.yml@main
+    with:
+      s3: true
+      postgres: true
