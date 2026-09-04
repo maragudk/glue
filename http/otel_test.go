@@ -175,11 +175,13 @@ func TestOpenTelemetry(t *testing.T) {
 		mux.HandleFunc("/things/{id}/", func(w http.ResponseWriter, r *http.Request) {})
 
 		h := gluehttp.OpenTelemetry(mux)
-		req := httptest.NewRequest(http.MethodConnect, "/things/anything-at-all", nil)
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodConnect, "/things/anything-at-all", nil))
 
-		is.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+		// The redirect is what puts the path on the request, so the test says nothing unless one
+		// happened. Which 3xx the standard library picks is its own business and has differed between
+		// Go versions, so the target is what gets asserted.
+		is.Equal(t, "/things/anything-at-all/", rec.Header().Get("Location"))
 
 		span := lastEndedSpan(t, sr)
 		is.Equal(t, "CONNECT", span.Name())
