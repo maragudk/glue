@@ -731,7 +731,9 @@ func TestMiddlewareErrors(t *testing.T) {
 
 			is.Equal(t, http.StatusInternalServerError, rec.Code)
 
-			span := endedSpanNamed(t, sr, "GET /")
+			// The span name is otelhttp's to choose and is not what this test is about, so the span is
+			// taken as the last one recorded rather than looked up by name.
+			span := lastEndedSpan(t, sr)
 			is.Equal(t, codes.Error, span.Status().Code)
 
 			var message string
@@ -849,7 +851,6 @@ func TestMiddlewareTelemetryComposition(t *testing.T) {
 			})
 			h = test.middleware(&mockPermissionsGetter{permissions: []model.Permission{"read", "write"}})(h)
 			h = authenticate(h)
-			// The span name is the operation passed here, since there is no router below to match a route.
 			h = otelhttp.NewHandler(h, "GET /")
 
 			rec := httptest.NewRecorder()
@@ -858,7 +859,9 @@ func TestMiddlewareTelemetryComposition(t *testing.T) {
 			is.Equal(t, http.StatusOK, rec.Code)
 			is.True(t, called)
 
-			assertAttributes(t, endedSpanNamed(t, sr, "GET /").Attributes())
+			// The span name is otelhttp's to choose and is not what this test is about, so the span is
+			// taken as the last one recorded rather than looked up by name.
+			assertAttributes(t, lastEndedSpan(t, sr).Attributes())
 		})
 	}
 }
