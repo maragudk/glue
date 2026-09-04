@@ -177,3 +177,99 @@ holds the same `*http.Request` otelhttp does, so the assignment would stay insid
 and it would give `http.server.request.duration` an `http.route` in the topologies where a
 request-replacing middleware currently swallows it. More invasive than this change wanted to be, and
 worth its own look.
+
+## Step 2: Self-review and the Go version regression
+
+**Author:** glue-otel-fix (sub-agent)
+
+### Prompt Context
+
+**Verbatim prompt:** "Once the implementation is done, self-review before handing back to the lead.
+Work in two phases: first, review the code you wrote -- read the diff, check logic, look for missing
+edge cases and test coverage gaps; second, run automated checks (tests and linters). Be honest about
+real issues; if everything looks good, say so rather than inventing problems."
+**Interpretation:** Run the `code-review` skill over the change, act on what two independent reviewers
+agree on and on anything serious either one finds alone, then prove the result with tests and linters.
+**Inferred intent:** A first pass which turned CI green is not the same as a change which is right.
+Find what the first pass assumed rather than checked.
+
+### What I did
+
+Dispatched two competing reviewers over the working tree. They converged on six findings, all acted on:
+
+The comment claiming a chi router never sets `http.Request.Pattern` was false, and both reviewers
+pointed at `chi/v5@v5.3.1/mux.go:481`. The true and sufficient reason otelhttp's second formatter run
+cannot be relied on is the request-replacing middleware, so the false clause simply went.
+
+The `http.ServeMux` scaffolding the first pass added to `/http/auth_test.go` went away again. Both
+reviewers independently showed it was unnecessary and that its comment was wrong for the pinned
+otelhttp v0.65.0, where the operation string is still what names the span. The tests take
+`lastEndedSpan` now.
+
+The sentence about what otelhttp's default "has changed across otelhttp versions" was history
+narration about a dependency's internals, which `AGENTS.md` bans. `routePattern`'s doc described the
+caller's wiring ("the router below", "a mux further down") from inside a function which is a pure
+function of a request. Both were rewritten. `http.route` "stays off entirely when nothing matched" had
+gone stale against its own code, and now reads "when no router matched".
+
+`routePattern` was being computed twice in the defer; the route is hoisted into a variable and
+`spanName` became a pure function of a method and a route.
+
+One reviewer alone found the CONNECT hole, which was serious enough to act on without corroboration
+and is written up under "What was tricky" in Step 1.
+
+Then a mutation sweep over the finished code, and `make lint` plus the suite under `-race -shuffle on`
+with the sqlite tags, on both the locked and the upgraded dependency set.
+
+### Why
+
+Two reviewers agreeing is a much stronger signal than one, and the disagreement was informative too:
+one asserted that `http.Request.Pattern` can only ever hold registration-time literals, and the other
+produced the socket transcript showing a CONNECT request putting a client-chosen path there. The
+second reviewer was right, and the guard exists because of it.
+
+### What worked
+
+The mutation sweep, again. Deleting the CONNECT guard and deleting the fallback both turned tests red
+immediately. Swapping the two branches of `routePattern` did not, which is how the broken precedence
+test was found -- it would otherwise have shipped as coverage which proved nothing.
+
+### What didn't work
+
+The compatibility run on the branch came back three green and one red, on `(go.mod, locked)`:
+
+    otel_test.go:182: Expected "307", but got "301" (type int)
+
+My own CONNECT test, not the fix. `GOTOOLCHAIN=go1.25.0 go test ./http/...` reproduced it locally in
+one command: `http.ServeMux` answers the trailing-slash redirect with 301 on Go 1.25 and 307 on Go 1.26
+and later, and the local toolchain here is 1.27, which is also what CI's `stable` leg runs. So the test
+passed in all four dependency-and-toolchain combinations I had actually tried, and failed in the one I
+had not. The redirect still has to happen for the test to mean anything, so it asserts the `Location`
+header now, which is the same on both.
+
+The lesson generalises: this repository's compatibility matrix is two-dimensional, and running only
+`go get -u -t ./...` against one toolchain covers half of it. All four combinations are cheap to run
+locally with `GOTOOLCHAIN`.
+
+### What I learned
+
+Reviewers disagreeing on a factual claim is worth more than either verdict on its own. Both claims
+were checkable, one transcript settled it, and the losing claim was the reassuring one.
+
+### What was tricky
+
+Deciding how much of what the reviewers found belonged in this change. The raw `r.Method` in span
+names is the same class of bug as the CONNECT hole and both reviewers flagged it, but it predates this
+work and collapsing unrecognised methods to `HTTP` would change behaviour for legitimate ones. It is
+in "Future work" in Step 1 and in the PR rather than in the diff, on the grounds that a compatibility
+fix which also changes span names for WebDAV clients is harder to review and harder to revert.
+
+### What warrants review
+
+Same as Step 1: the precedence in `routePattern`, and whether the `http.Request.Pattern` fallback
+belongs in a compatibility fix at all.
+
+### Future work
+
+Unchanged from Step 1: the `r.Method` normalisation, and writing the resolved route back to
+`r.Pattern` so otelhttp's own metrics carry `http.route`.
