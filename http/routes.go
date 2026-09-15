@@ -23,8 +23,6 @@ func (s *Server) setupRoutes() {
 	}
 	r.Use(protection.Handler)
 
-	r.NotFound(NotFound(s.htmlPage))
-
 	r.Group(func(r *Router) {
 		r.Use(httph.VersionedAssets)
 
@@ -39,6 +37,11 @@ func (s *Server) setupRoutes() {
 		if s.permissionsGetter != nil {
 			r.Use(SavePermissionsInContext(s.log, s.permissionsGetter))
 		}
+
+		// Registered inside this group so the not-found page is rendered with the session loaded and the
+		// user authenticated, like any other HTML page. Chi stores it on the parent mux already wrapped
+		// in this group's middleware, so routing elsewhere is unaffected.
+		r.NotFound(NotFound(s.htmlPage))
 
 		Logout(r, s.log, s.r.SM, s.htmlPage)
 

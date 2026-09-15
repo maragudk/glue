@@ -5,14 +5,26 @@ import (
 	. "maragu.dev/gomponents/html"
 )
 
-func ErrorPage(page PageFunc) Node {
-	return page(PageProps{Title: "Something went wrong"},
+// ErrorPage rendered with the given page function, from props describing the request that failed.
+// [PageProps.Title] is replaced and [PageProps.Description] cleared, because both describe the page that
+// was being rendered and not this one. Every other field reaches the page function unchanged, so the
+// error page is rendered for the same user, with the same permissions, as any other page.
+func ErrorPage(page PageFunc, props PageProps) Node {
+	props.Title = "Something went wrong"
+	props.Description = ""
+
+	return page(props,
 		H1(Text("Something went wrong")),
 	)
 }
 
-func NotFoundPage(page PageFunc) Node {
-	return page(PageProps{Title: "Not found"},
+// NotFoundPage rendered with the given page function, from props describing the request that matched
+// nothing. See [ErrorPage] for how the props are treated.
+func NotFoundPage(page PageFunc, props PageProps) Node {
+	props.Title = "Not found"
+	props.Description = ""
+
+	return page(props,
 		H1(Text("Not found")),
 	)
 }

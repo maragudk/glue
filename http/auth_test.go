@@ -502,6 +502,32 @@ func TestLogout(t *testing.T) {
 			is.Equal(t, test.expectRedirect, rec.Header().Get("Location"))
 		})
 	}
+
+	t.Run("renders the error page with the request's props when the session cannot be destroyed", func(t *testing.T) {
+		var props html.PageProps
+		mux := chi.NewRouter()
+		router := &gluehttp.Router{Mux: mux}
+		gluehttp.Logout(router, slog.New(slog.DiscardHandler), &mockSessionDestroyer{err: errors.New("destroy error")},
+			func(p html.PageProps, children ...g.Node) g.Node {
+				props = p
+				return g.Group(children)
+			})
+
+		userID := model.UserID("u_123")
+		req := httptest.NewRequest(http.MethodPost, "/logout", nil)
+		ctx := context.WithValue(req.Context(), gluehttp.ContextKey("userID"), &userID)
+		ctx = context.WithValue(ctx, gluehttp.ContextKey("permissions"), []model.Permission{"read"})
+		req = req.WithContext(ctx)
+
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		is.Equal(t, http.StatusInternalServerError, rec.Code)
+		is.Equal(t, "Something went wrong", props.Title)
+		is.Equal(t, &userID, props.UserID)
+		is.EqualSlice(t, []model.Permission{"read"}, props.Permissions)
+		is.True(t, strings.Contains(rec.Body.String(), "<h1>Something went wrong</h1>"))
+	})
 }
 
 type mockSessionDestroyer struct {
