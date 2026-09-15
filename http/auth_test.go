@@ -502,9 +502,7 @@ func TestLogout(t *testing.T) {
 			is.Equal(t, test.expectRedirect, rec.Header().Get("Location"))
 		})
 	}
-}
 
-func TestLogoutErrorPage(t *testing.T) {
 	t.Run("renders the error page with the request's props when the session cannot be destroyed", func(t *testing.T) {
 		var props html.PageProps
 		mux := chi.NewRouter()

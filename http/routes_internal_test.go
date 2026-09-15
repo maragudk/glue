@@ -14,7 +14,7 @@ import (
 	"maragu.dev/glue/model"
 )
 
-func TestSetupRoutes(t *testing.T) {
+func TestServer_SetupRoutes(t *testing.T) {
 	t.Run("renders the not-found page for an authenticated user with their props", func(t *testing.T) {
 		var props html.PageProps
 		s := NewServer(NewServerOptions{
@@ -88,7 +88,7 @@ func TestSetupRoutes(t *testing.T) {
 func newSessionToken(t *testing.T, s *Server, userID model.UserID) string {
 	t.Helper()
 
-	ctx, err := s.r.SM.Load(context.Background(), "")
+	ctx, err := s.r.SM.Load(t.Context(), "")
 	is.NotError(t, err)
 
 	s.r.SM.Put(ctx, SessionUserIDKey, string(userID))

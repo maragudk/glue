@@ -216,3 +216,59 @@ also carry `NoClickjacking` and CSP headers, which they did not before; that is 
 
 `Authorize` in `/http/auth.go` still answers 403 with a plain-text `http.Error` rather than a rendered page — the
 same family of problem as #209 and probably its own issue.
+
+## Step 4: Address Markus's review feedback on PR #210
+
+**Author:** error-page-props-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Apply these three review changes from Markus on PR #210, in one commit, then push. 1. `http/routes_internal_test.go`: in `newSessionToken`, replace `context.Background()` with `t.Context()` and drop the `context` import if unused. 2. `http/routes_internal_test.go`: rename `TestSetupRoutes` to `TestServer_SetupRoutes`. 3. `http/auth_test.go`: fold `TestLogoutErrorPage` into `TestLogout` as a subtest (keep the subtest name/body as is), removing the separate top-level test."
+**Interpretation:** Three mechanical test-hygiene fixes from review, no behaviour change.
+**Inferred intent:** Bring the new tests in line with the project's conventions before the PR merges.
+
+### What I did
+
+In `/http/routes_internal_test.go`, `newSessionToken` now calls `s.r.SM.Load(t.Context(), "")`, and the test was
+renamed to `TestServer_SetupRoutes` to match the `TestType_Method` convention. In `/http/auth_test.go`,
+`TestLogoutErrorPage` became a `t.Run` at the end of `TestLogout`, after the table loop, with its name and body
+unchanged; the separate top-level test is gone.
+
+### Why
+
+All three are conventions I got wrong: `t.Context()` over `context.Background()` in tests, one `TestX` per exported
+identifier, and the `Type_Method` naming for a method test. The `TestLogout` fold is the same point both reviewers
+raised in step 2, which I had declined then only because the separate test had been requested by name — with
+Markus asking for it directly, that reason is gone.
+
+### What worked
+
+The fold was a pure move: the subtest needed no edits because it already built its own router and page function
+rather than leaning on the table's fixtures.
+
+### What didn't work
+
+One self-inflicted detour. While folding the test I added a `//nolint:unused` to `mockSessionDestroyer`, having
+half-thought the struct would lose its last user. It does not — the `TestLogout` table still constructs it on every
+case — so the directive was wrong and I removed it before running anything.
+
+### What I learned
+
+The `context` import in `/http/routes_internal_test.go` survives the `t.Context()` switch: `mockUserActiveChecker`
+and `mockPermissionsGetter` both take a `context.Context` in their method signatures, so the import is still needed.
+The instruction to drop it "if unused" did not apply.
+
+### What was tricky
+
+Nothing. All three changes are mechanical and the suite covers them.
+
+### What warrants review
+
+Only that `TestLogout` now mixes a table with a trailing hand-written subtest. That is deliberate — the error-page
+case asserts props rather than the table's status/redirect/destroyed triple — but it does make the test function
+two-shaped.
+
+### Future work
+
+Unchanged from step 3: `Authorize` in `/http/auth.go` still answers 403 with a plain-text `http.Error` rather than a
+rendered page, which is the same family of problem as #209.
