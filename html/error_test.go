@@ -13,19 +13,20 @@ import (
 )
 
 func TestErrorPage(t *testing.T) {
-	t.Run("passes the given props through to the page function, but sets the title", func(t *testing.T) {
+	t.Run("passes the given props through to the page function, but sets the title and clears the description", func(t *testing.T) {
 		testPagePassesPropsThrough(t, html.ErrorPage, "Something went wrong")
 	})
 }
 
 func TestNotFoundPage(t *testing.T) {
-	t.Run("passes the given props through to the page function, but sets the title", func(t *testing.T) {
+	t.Run("passes the given props through to the page function, but sets the title and clears the description", func(t *testing.T) {
 		testPagePassesPropsThrough(t, html.NotFoundPage, "Not found")
 	})
 }
 
 // testPagePassesPropsThrough renders the given error page with every field of [html.PageProps] set, and
-// checks that the page function sees the expected title and all the other fields unchanged.
+// checks that the page function sees the expected title, an empty description, and all the other fields
+// unchanged.
 func testPagePassesPropsThrough(t *testing.T, errorPage func(page html.PageFunc, props html.PageProps) g.Node, expectedTitle string) {
 	t.Helper()
 
@@ -53,7 +54,7 @@ func testPagePassesPropsThrough(t *testing.T, errorPage func(page html.PageFunc,
 	is.NotError(t, errorPage(page, props).Render(&b))
 
 	is.Equal(t, expectedTitle, got.Title)
-	is.Equal(t, "A description", got.Description)
+	is.Equal(t, "", got.Description)
 	is.Equal(t, t.Context(), got.Ctx)
 	is.Equal(t, req, got.R)
 	is.True(t, got.W == rec, "the response writer should be passed through")

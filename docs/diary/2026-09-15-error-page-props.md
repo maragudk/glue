@@ -148,3 +148,71 @@ I did not take three suggestions. Resetting `Description` contradicts the stated
 for the lead rather than a unilateral change (recorded above). Folding `TestLogoutErrorPage` into `TestLogout` was
 requested by name in the requirements, so it stays. And the `routes.go` registration is out of scope, as described
 under Future work.
+
+## Step 3: Move the not-found registration into the HTML group, and clear the description
+
+**Author:** error-page-props-builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Scope extension approved: move the NotFound registration into the HTML group. [...] Add a test against the real `Server` routes [...] that a request for an unmatched path with an authenticated session renders the not-found page with `props.UserID` set, and that the response carries the 404 status." Followed by: "Second change, decided: blank `Description` on error pages. In `html/error.go`, both `ErrorPage` and `NotFoundPage` should set `props.Description = ""` alongside `props.Title`."
+**Interpretation:** Close the two open questions from step 2's self-review — finish the fix for glue's own server, and settle the description pass-through.
+**Inferred intent:** Make #209 actually fixed end to end for the built-in server, not just for consumers who wire their own router, and stop a stale page description leaking onto error pages.
+
+### What I did
+
+Moved `r.NotFound(NotFound(s.htmlPage))` in `/http/routes.go` out of the root router and into the HTML group, below
+the `SM.LoadAndSave` / `Authenticate` / conditional `SavePermissionsInContext` `Use` calls, with a comment saying
+why it lives there. Added `/http/routes_internal_test.go` (internal, package `http`, since `setupRoutes` is
+unexported and otherwise only reachable through `Start`, which listens on a port).
+
+Then the second change: both `ErrorPage` and `NotFoundPage` in `/html/error.go` now also clear
+`PageProps.Description`, with the doc comment on `ErrorPage` explaining that title and description both describe the
+page that was being rendered rather than the error page. `HideAuth` and everything else still passes through.
+
+### Why
+
+Step 2's fix only reached consumers who register `NotFound` inside their own auth group. For glue's own `Server` the
+404 page still rendered anonymous, which is the exact symptom #209 reported. Clearing `Description` closes the
+matching hole on the other side: a consumer that set a page-specific description would otherwise render it under
+"Something went wrong".
+
+### What worked
+
+I got the real-session test I hoped for rather than the marker-header fallback. `scs.SessionManager.Load(ctx, "")`
+plus `Put` and `Commit` mints a token against the server's own store, and sending it as a cookie named
+`s.r.SM.Cookie.Name` drives the genuine `Authenticate` path. So the test asserts what was actually asked for:
+404 status, `props.UserID` set to `u_123`, and permissions carried through.
+
+### What didn't work
+
+Nothing failed outright. The Postgres-dependent packages still fail locally with
+`dial tcp 127.0.0.1:5433: connect: connection refused`, unchanged and unrelated.
+
+### What I learned
+
+Read chi v5's `Mux.NotFound` (`mux.go:203`) to confirm the move is safe rather than take it on trust. When the mux
+is inline and has a parent — which is what a `Group` gives you — chi wraps the handler in that group's middleware
+chain and stores it on the *parent*, then pushes it down to sub-routes that have none. So the handler is still the
+router's single not-found handler; it has simply been pre-wrapped. Root routing is untouched.
+
+### What was tricky
+
+Proving the negative. It would be easy to write a test that passes both before and after the move, so I checked
+both directions: with the registration back on the root router the authenticated subtest fails with
+`Expected not nil, but got nil (type *model.UserID)`, and removing `props.Description = ""` fails with
+`Expected "", but got "A description" (type string)`. I also added a subtest that a route registered through
+`HTTPRouterInjector` still answers 200, so the "root routing is unaffected" claim is pinned by a test rather than
+by my reading of chi.
+
+### What warrants review
+
+The cost of the move, which is real and deliberate: every 404 now loads a session and, for an authenticated one,
+calls `IsUserActive` — so unmatched paths hit the database where they previously did not. That is the price of a
+correct 404 page, and worth a conscious look if bot traffic on nonexistent paths is a concern. 404 responses now
+also carry `NoClickjacking` and CSP headers, which they did not before; that is an improvement, but it is a change.
+
+### Future work
+
+`Authorize` in `/http/auth.go` still answers 403 with a plain-text `http.Error` rather than a rendered page — the
+same family of problem as #209 and probably its own issue.
