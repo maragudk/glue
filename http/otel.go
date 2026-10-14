@@ -153,12 +153,13 @@ func OpenTelemetry(next http.Handler) http.Handler {
 				// be relied on to pick it up: its second run happens only when [http.Request.Pattern] reaches
 				// back up here, which any middleware in between replacing the request prevents. So the name is
 				// set directly. http.route is Conditionally Required "if and only if it's available", so it
-				// stays off entirely when nothing matched rather than going out as an empty string, which would
-				// look like a real value when grouping. A panic mid-routing can leave the pattern partial,
-				// which still says more about the request than nothing does.
-				span.SetName(spanName(r))
-				if routePattern := chi.RouteContext(r.Context()).RoutePattern(); routePattern != "" {
-					span.SetAttributes(semconv.HTTPRoute(routePattern))
+				// stays off entirely when no router matched rather than going out as an empty string, which
+				// would look like a real value when grouping. A panic mid-routing can leave the pattern
+				// partial, which still says more about the request than nothing does.
+				route := routePattern(r)
+				span.SetName(spanName(r.Method, route))
+				if route != "" {
+					span.SetAttributes(semconv.HTTPRoute(route))
 				}
 
 				// [http.ErrAbortHandler] is documented as a sentinel to panic with: it aborts the
@@ -173,14 +174,14 @@ func OpenTelemetry(next http.Handler) http.Handler {
 
 			next.ServeHTTP(w, r)
 		}),
-		// The operation name is unused, since [spanName] decides the name from the request. The formatter
-		// is not optional though. [otelhttp.WithSpanNameFormatter] documents that it runs a second time
-		// after the middleware once something has set [http.Request.Pattern], which routers do, and with
-		// no formatter that run renames the span to the operation. A router either side of this middleware
-		// would otherwise leave every span named the empty string.
+		// The operation name is unused, since the formatter below ignores what is passed here and decides
+		// the name from the request. The formatter is not left out, because
+		// [otelhttp.WithSpanNameFormatter] documents that it runs a second time after the middleware once
+		// something has set [http.Request.Pattern], and that run has the last word on the name, after the
+		// one set above. Handing it the same naming is what keeps the two agreeing.
 		"",
 		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
-			return spanName(r)
+			return spanName(r.Method, routePattern(r))
 		}),
 		// A new trace root with a link, for requests which brought trace context with them. [otelhttp]
 		// hands this the context it extracted, so a remote span context is there exactly when the request
@@ -193,16 +194,49 @@ func OpenTelemetry(next http.Handler) http.Handler {
 	)
 }
 
-// spanName as semantic conventions want it: "{method} {route}" where a low-cardinality route is available
-// and "{method}" alone where it is not, so the name carries no trailing space when nothing matched.
-// [chi.Context.RoutePattern] returns "" both for a request no route matched and for a handler served
-// outside a chi router, which are the same case here.
-func spanName(r *http.Request) string {
-	if routePattern := chi.RouteContext(r.Context()).RoutePattern(); routePattern != "" {
-		return r.Method + " " + routePattern
+// spanName as semantic conventions want it: "{method} {route}" for a route which is available, and
+// "{method}" alone for the empty route, so the name carries no trailing space when no router matched.
+func spanName(method, route string) string {
+	if route != "" {
+		return method + " " + route
 	}
 
-	return r.Method
+	return method
+}
+
+// routePattern which a router matched for the request, or "" when none did.
+//
+// A router reports its match in one of two places, and both are read. [chi.Context.RoutePattern] holds
+// the patterns of every chi router the request passed through, joined, and is empty both when no chi
+// route matched and when the request never met a chi router at all. [http.Request.Pattern] holds the
+// single pattern whichever router set it matched, [http.ServeMux] being the one in the standard library.
+//
+// chi comes first, because it reports in the request context, which outlives a middleware replacing the
+// request, while [http.Request.Pattern] travels on the request itself and does not. Where a request
+// carries both that can cost precision, a chi wildcard winning over the specific pattern a mux mounted
+// under it matched, which is the price of reading the source that is still there further up.
+//
+// A pattern can name a method and a host in front of the path, and http.route is the path alone, so
+// everything before the first "/" is dropped.
+//
+// [http.ServeMux] puts a request path rather than a registered pattern in [http.Request.Pattern] in one
+// case: a CONNECT request which it answers with a trailing-slash redirect, since CONNECT paths are not
+// canonicalized first and so arrive as the client wrote them. A client-chosen path is unbounded and
+// belongs in neither a span name nor http.route, so CONNECT is not read from there at all.
+func routePattern(r *http.Request) string {
+	if route := chi.RouteContext(r.Context()).RoutePattern(); route != "" {
+		return route
+	}
+
+	if r.Method == http.MethodConnect {
+		return ""
+	}
+
+	if i := strings.IndexByte(r.Pattern, '/'); i >= 0 {
+		return r.Pattern[i:]
+	}
+
+	return ""
 }
 
 func contextCanceled(errs ...error) bool {
